@@ -1,0 +1,62 @@
+# Focus Group Stress Test Configuration - 5 Participants x 10 Questions (DeepSeek V3)
+# Run with: python -m focus_group run configs/stress_test_5p_10q_deepseek.yaml -v
+# Requires: DEEPSEEK_API_KEY environment variable
+
+# Demographics for participant generation (5 diverse participants)
+demographics:
+  - "Female, 25-35, software developer"
+  - "Male, 45-55, high school teacher"
+  - "Non-binary, 30-40, freelance graphic designer"
+  - "Female, 55-65, retired nurse"
+  - "Male, 20-25, college student studying computer science"
+
+# Questions to discuss (10 questions on technology & AI)
+questions:
+  - "How has technology changed your daily routine over the past few years?"
+  - "What's your honest reaction when you hear the term 'artificial intelligence'?"
+  - "Do you think social media has been a net positive or negative for society?"
+  - "How comfortable are you with AI making decisions that affect your life, like loan approvals or medical diagnoses?"
+  - "What technology do you find yourself most dependent on, and how does that make you feel?"
+  - "Have you ever felt that technology has replaced a meaningful human interaction in your life?"
+  - "What concerns, if any, do you have about AI in the workplace?"
+  - "How do you decide what personal information you're willing to share with tech companies?"
+  - "Do you think children today are better or worse off growing up with so much technology?"
+  - "If you could change one thing about how technology is developing, what would it be?"
+
+# Purpose/introductory statement
+purpose: "We're here today to discuss your experiences, opinions, and concerns about technology and artificial intelligence in everyday life."
+
+# Closing question
+closing_question: "Do you have any final thoughts about technology and AI that you'd like to share before we wrap up?"
+
+# Session name
+session_name: "stress_test_5p_10q_deepseek"
+
+# LLM Model configuration (DeepSeek V3 via OpenAI-compatible API)
+model:
+  provider: "openai"
+  model_name: "deepseek-chat"
+  api_key_env_var: "DEEPSEEK_API_KEY"
+  base_url: "https://api.deepseek.com"
+  max_tokens: 2048
+  temperature: 0.7
+  top_p: 0.9
+  num_ctx: 8192
+
+# Context window management
+context:
+  max_tokens: 6000
+  summarize_after_tokens: 4000
+  reserved_for_persona: 500
+  reserved_for_question: 200
+  reserved_for_recent_response: 1000
+
+# Output configuration
+output:
+  directory: "./output"
+  save_debug_log: true
+  save_clean_transcript: true
+  log_format: "jsonl"
+
+# Persona validation
+validate_personas: true

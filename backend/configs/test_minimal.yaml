@@ -1,0 +1,9 @@
+  session_name: test_minimal
+  demographics:
+    - "Female, 30-40, teacher"
+  questions:
+    - "What do you think?"
+  model:
+    model_name: "llama3.1:8b-instruct-q4_K_M"
+  output:
+    directory: "./output"

@@ -1,0 +1,10 @@
+# Sample Demographics Configuration
+# Run with: python -m focus_group generate-personas configs/sample_demographics.yaml
+
+# List of demographic specifications (1-15 allowed)
+demographics:
+  - "Female, 30-40, tech industry professional, works remotely"
+  - "Male, 50-60, retired high school teacher"
+  - "Non-binary, 25-35, graduate student in psychology"
+  - "Female, 45-55, small business owner, restaurant industry"
+  - "Male, 20-30, recent college graduate, finance sector"

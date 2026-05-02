@@ -1,0 +1,49 @@
+# Sample Focus Group Session Configuration
+# Run with: python -m focus_group run configs/sample_session.yaml
+
+# Demographics for participant generation (required, 1-15 participants)
+demographics:
+  - "Female, 30-40, professional baker"
+  - "Male, 50-60, google engineer"
+  - "Non-binary, 25-35, stay-at-home mom"
+
+# Questions to discuss (required, 1-20 questions)
+questions:
+  - "What do you think is the ideal work-life balance?"
+  - "How do you stay productive when you feel low on energy?"
+  - "What challenges have you faced with finding meaningful work?"
+
+# Optional: Purpose/introductory statement for the focus group
+purpose: "We're here today to discuss experiences and perspectives on work."
+
+# Optional: Custom closing question (defaults to standard closing if not provided)
+closing_question: "Do you have any final thoughts about participating in this discussion?"
+
+# Session name (optional, auto-generated if not provided)
+session_name: "nature_work_discussion"
+
+# LLM Model configuration
+model:
+  model_name: "llama3.1:8b-instruct-q4_K_M"
+  base_url: "http://localhost:11434"
+  num_ctx: 8192
+  temperature: 0.7
+  top_p: 0.9
+
+# Context window management
+context:
+  max_tokens: 6000
+  summarize_after_tokens: 4000
+  reserved_for_persona: 500
+  reserved_for_question: 200
+  reserved_for_recent_response: 1000
+
+# Output configuration
+output:
+  directory: "./output"
+  save_debug_log: true
+  save_clean_transcript: true
+  log_format: "jsonl"
+
+# Persona validation (recommended)
+validate_personas: true

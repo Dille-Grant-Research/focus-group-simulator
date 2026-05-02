@@ -1,0 +1,347 @@
+"""Persona generation from demographic specifications.
+
+This module provides functionality to convert demographic specifications
+(e.g., "Female, 30-40, tech industry") into fully realized personas
+using an LLM.
+"""
+
+import json
+import re
+from collections import Counter
+from typing import Any
+
+from focus_group.llm.base import BaseLLMProvider
+from focus_group.models.persona import Persona
+
+# System prompt for persona generation
+PERSONA_GENERATION_SYSTEM_PROMPT = """You are an expert at creating realistic, diverse personas for focus group research.
+
+When given a demographic specification, generate a complete persona with:
+1. A realistic full name appropriate for the demographic
+2. A specific age within any range given
+3. A detailed background (occupation, experience, life situation)
+4. 3-5 personality traits that feel authentic (include NEGATIVE or edgy traits too — not everyone is warm and agreeable)
+5. A communication style description
+6. Appropriate pronouns based on the demographic (she/her, he/him, they/them, etc.)
+7. A discussion_stance — how they engage in group debates. One of: "agreeable", "balanced", "challenging", "contrarian". NOT everyone should be agreeable — real groups have people who push back.
+8. A communication_register — their speaking style. One of: "formal", "casual", "academic", "folksy", "curt", "warm", "conversational". Vary this across participants.
+
+The persona should feel like a real, unique individual - not a stereotype.
+Include subtle details that make them feel human and relatable.
+
+IMPORTANT: You must respond with ONLY valid JSON in this exact format:
+{
+    "name": "Full Name",
+    "age": 35,
+    "background": "Detailed background description...",
+    "personality_traits": ["trait1", "trait2", "trait3"],
+    "communication_style": "Description of how they communicate...",
+    "pronouns": "she/her",
+    "discussion_stance": "balanced",
+    "communication_register": "formal"
+}
+
+Do not include any text before or after the JSON object."""
+
+
+class PersonaGenerationError(Exception):
+    """Raised when persona generation fails."""
+
+    pass
+
+
+class PersonaGenerator:
+    """Generates focus group personas from demographic specifications.
+
+    This class uses an LLM to convert demographic specifications into
+    fully realized personas suitable for focus group simulation.
+
+    Attributes:
+        provider: The LLM provider used for generation
+    """
+
+    def __init__(self, provider: BaseLLMProvider) -> None:
+        """Initialize the persona generator.
+
+        Args:
+            provider: The LLM provider to use for generating personas
+        """
+        self.provider = provider
+
+    async def generate_persona(self, demographic: str) -> Persona:
+        """Generate a single persona from a demographic specification.
+
+        Args:
+            demographic: A demographic specification string
+                (e.g., "Female, 30-40, tech industry")
+
+        Returns:
+            A fully populated Persona object
+
+        Raises:
+            PersonaGenerationError: If generation or parsing fails
+        """
+        if not demographic or not demographic.strip():
+            raise PersonaGenerationError("Demographic specification cannot be empty")
+
+        prompt = f"""Generate a realistic persona for a focus group participant with this demographic profile:
+
+{demographic}
+
+Remember to respond with ONLY valid JSON in the specified format."""
+
+        try:
+            response = await self.provider.generate(
+                prompt=prompt,
+                system_prompt=PERSONA_GENERATION_SYSTEM_PROMPT,
+            )
+
+            persona_data = self._parse_response(response, demographic)
+            return Persona(**persona_data)
+
+        except json.JSONDecodeError as e:
+            raise PersonaGenerationError(f"Failed to parse LLM response as JSON: {e}") from e
+        except Exception as e:
+            raise PersonaGenerationError(f"Failed to generate persona: {e}") from e
+
+    async def generate_personas(
+        self,
+        demographics: list[str],
+        ensure_unique_names: bool = True,
+    ) -> list[Persona]:
+        """Generate multiple personas sequentially.
+
+        Note: Uses sequential execution because Ollama processes requests
+        one at a time internally. Parallel requests cause resource contention.
+
+        Args:
+            demographics: List of demographic specification strings
+            ensure_unique_names: If True, regenerate any duplicate names
+
+        Returns:
+            List of Persona objects corresponding to each demographic
+
+        Raises:
+            PersonaGenerationError: If generation fails for any demographic
+        """
+        if not demographics:
+            return []
+
+        # Generate personas sequentially (Ollama handles one request at a time)
+        personas = []
+        for demo in demographics:
+            persona = await self.generate_persona(demo)
+            personas.append(persona)
+
+        if ensure_unique_names:
+            personas = await self._ensure_unique_names(list(personas), demographics)
+
+        personas = self._ensure_stance_diversity(list(personas))
+        personas = self._ensure_register_diversity(list(personas))
+
+        return list(personas)
+
+    async def _ensure_unique_names(
+        self,
+        personas: list[Persona],
+        demographics: list[str],
+    ) -> list[Persona]:
+        """Ensure all personas have unique names.
+
+        If duplicate names are found, regenerate those personas.
+
+        Args:
+            personas: List of generated personas
+            demographics: Original demographics for regeneration
+
+        Returns:
+            List of personas with unique names
+        """
+        seen_names: set[str] = set()
+        result: list[Persona] = []
+
+        for i, persona in enumerate(personas):
+            attempts = 0
+            current_persona = persona
+
+            while current_persona.name in seen_names and attempts < 3:
+                # Regenerate this persona
+                current_persona = await self.generate_persona(demographics[i])
+                attempts += 1
+
+            seen_names.add(current_persona.name)
+            result.append(current_persona)
+
+        return result
+
+    def _ensure_stance_diversity(self, personas: list[Persona]) -> list[Persona]:
+        """Ensure at least some personas have challenging/contrarian stances.
+
+        If no persona has a challenging or contrarian stance, reassign
+        at least 1 (groups of 3+) or 2 (groups of 5+).
+
+        Args:
+            personas: List of generated personas
+
+        Returns:
+            List of personas with guaranteed stance diversity
+        """
+        if len(personas) < 3:
+            return personas
+
+        challengers = [p for p in personas if p.discussion_stance in ("challenging", "contrarian")]
+
+        needed = 2 if len(personas) >= 5 else 1
+        deficit = needed - len(challengers)
+
+        if deficit <= 0:
+            return personas
+
+        # Find personas with agreeable/balanced stances to reassign
+        stances_to_assign = ["challenging", "contrarian"]
+        reassigned = 0
+        result = list(personas)
+        for i, p in enumerate(result):
+            if reassigned >= deficit:
+                break
+            if p.discussion_stance in ("agreeable", "balanced"):
+                new_stance = stances_to_assign[reassigned % len(stances_to_assign)]
+                result[i] = p.model_copy(update={"discussion_stance": new_stance})
+                reassigned += 1
+
+        return result
+
+    _VALID_REGISTERS = frozenset(
+        {"formal", "casual", "academic", "folksy", "curt", "warm", "conversational"}
+    )
+
+    def _ensure_register_diversity(self, personas: list[Persona]) -> list[Persona]:
+        """Ensure communication register variety across personas.
+
+        If all personas share the same register, reassign some to create variety.
+        For groups of 3-5: at least 3 unique registers.
+        For groups of 6+: at least 4 unique registers.
+        Groups smaller than 3 are not modified.
+
+        Args:
+            personas: List of generated personas
+
+        Returns:
+            List of personas with guaranteed register diversity
+        """
+        if len(personas) < 3:
+            return personas
+
+        current = [p.communication_register for p in personas]
+        unique = set(current)
+        min_unique = 4 if len(personas) >= 6 else 3
+
+        if len(unique) >= min_unique:
+            return personas
+
+        # Find overrepresented register and available alternatives
+        counter = Counter(current)
+        most_common = counter.most_common(1)[0][0]
+        available = sorted(self._VALID_REGISTERS - unique)
+
+        result = list(personas)
+        assigned = 0
+        for i, p in enumerate(result):
+            if len(unique) + assigned >= min_unique:
+                break
+            if not available:
+                break
+            if p.communication_register == most_common:
+                result[i] = p.model_copy(update={"communication_register": available[assigned]})
+                assigned += 1
+
+        return result
+
+    def _parse_response(self, response: str, demographic: str) -> dict[str, Any]:
+        """Parse the LLM response into persona data.
+
+        Args:
+            response: The raw LLM response text
+            demographic: The original demographic for the demographic_source field
+
+        Returns:
+            Dictionary with persona fields
+
+        Raises:
+            json.JSONDecodeError: If the response is not valid JSON
+            PersonaGenerationError: If required fields are missing
+        """
+        # Clean up response - extract JSON if wrapped in markdown
+        cleaned = response.strip()
+
+        # Remove markdown code blocks if present
+        if cleaned.startswith("```"):
+            # Find the end of the code block
+            lines = cleaned.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                if line.startswith("```") and not in_block:
+                    in_block = True
+                    continue
+                elif line.startswith("```") and in_block:
+                    break
+                elif in_block:
+                    json_lines.append(line)
+            cleaned = "\n".join(json_lines)
+
+        # Try to find JSON object in the response
+        json_match = re.search(r"\{[\s\S]*\}", cleaned)
+        if json_match:
+            cleaned = json_match.group(0)
+
+        data = json.loads(cleaned)
+
+        # Validate required fields
+        required_fields = ["name", "age", "background", "personality_traits", "communication_style"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise PersonaGenerationError(f"LLM response missing required fields: {missing}")
+
+        # Add demographic source
+        data["demographic_source"] = demographic
+
+        # Set default pronouns if not provided (backward compatibility)
+        if "pronouns" not in data or not data["pronouns"]:
+            data["pronouns"] = "they/them"
+
+        # Set default discussion_stance if not provided
+        if "discussion_stance" not in data or not data["discussion_stance"]:
+            data["discussion_stance"] = "balanced"
+
+        # Set default communication_register if not provided
+        if "communication_register" not in data or not data["communication_register"]:
+            data["communication_register"] = "conversational"
+
+        # Ensure personality_traits is a list
+        if isinstance(data["personality_traits"], str):
+            # Split on commas if it's a string
+            data["personality_traits"] = [t.strip() for t in data["personality_traits"].split(",")]
+
+        return data
+
+    async def validate_persona(self, persona: Persona) -> bool:
+        """Validate that a persona is suitable for use.
+
+        Performs basic validation beyond Pydantic's schema validation.
+
+        Args:
+            persona: The persona to validate
+
+        Returns:
+            True if the persona is valid
+        """
+        # Check for minimum content quality
+        if len(persona.background) < 20:
+            return False
+        if len(persona.personality_traits) < 2:
+            return False
+        if len(persona.communication_style) < 20:
+            return False
+
+        return True

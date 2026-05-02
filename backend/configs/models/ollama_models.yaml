@@ -1,0 +1,23 @@
+# Ollama Model Configurations
+# These are local models for the RTX 5070ti (16GB VRAM)
+
+primary:
+  model_name: "llama3.1:8b-instruct-q4_K_M"
+  base_url: "http://localhost:11434"
+  num_ctx: 8192
+  temperature: 0.7
+  top_p: 0.9
+
+# Higher quality model for persona generation
+persona_generation:
+  model_name: "qwen2.5:14b-instruct-q4_K_M"
+  base_url: "http://localhost:11434"
+  num_ctx: 4096
+  temperature: 0.8
+
+# Fast model for speaker selection decisions
+selection:
+  model_name: "llama3.1:8b-instruct-q4_K_M"
+  base_url: "http://localhost:11434"
+  num_ctx: 4096
+  temperature: 0.3  # Lower for more deterministic selection

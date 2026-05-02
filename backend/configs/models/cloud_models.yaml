@@ -1,0 +1,32 @@
+# Cloud Model Configurations (Optional Fallback)
+# Set API keys in .env file
+
+anthropic:
+  high_quality:
+    provider: "anthropic"
+    model_name: "claude-3-5-sonnet-20241022"
+    api_key_env_var: "ANTHROPIC_API_KEY"
+    max_tokens: 2048
+    temperature: 0.7
+
+  fast:
+    provider: "anthropic"
+    model_name: "claude-3-haiku-20240307"
+    api_key_env_var: "ANTHROPIC_API_KEY"
+    max_tokens: 1024
+    temperature: 0.7
+
+openai:
+  high_quality:
+    provider: "openai"
+    model_name: "gpt-4o"
+    api_key_env_var: "OPENAI_API_KEY"
+    max_tokens: 2048
+    temperature: 0.7
+
+  cost_effective:
+    provider: "openai"
+    model_name: "gpt-4o-mini"
+    api_key_env_var: "OPENAI_API_KEY"
+    max_tokens: 1024
+    temperature: 0.7
