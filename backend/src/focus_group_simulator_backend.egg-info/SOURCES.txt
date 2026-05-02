@@ -1,10 +1,5 @@
 pyproject.toml
 src/focus_group/__init__.py
-src/focus_group/__main__.py
-src/focus_group/cli/__init__.py
-src/focus_group/cli/app.py
-src/focus_group/cli/config_loader.py
-src/focus_group/cli/commands/__init__.py
 src/focus_group/context/__init__.py
 src/focus_group/context/manager.py
 src/focus_group/context/storage.py
