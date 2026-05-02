@@ -1,0 +1,28 @@
+# Never send secrets into the image
+**/.env
+**/*.env
+
+# Dev artifacts
+**/__pycache__
+**/*.pyc
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.venv
+**/node_modules
+**/dist
+**/.coverage
+**/htmlcov
+**/.pytest_cache
+**/*.egg-info
+
+# Not needed in the image
+backend/tests
+backend/configs
+backend/Makefile
+frontend
+docs
+docs-local
+scripts
+.claude
+.git

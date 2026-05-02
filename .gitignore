@@ -4,6 +4,9 @@
 node_modules
 dist
 coverage
+.coverage
+.coverage.*
+htmlcov/
 logs
 *.log
 .DS_Store
