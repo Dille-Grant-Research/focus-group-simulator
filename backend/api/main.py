@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -18,6 +19,7 @@ from api.config import Settings, get_settings
 from api.database import init_db, startup_recovery
 from api.middleware.auth import AuthMiddleware
 from api.routes import api_router
+from api.routes.health import router as health_router
 from api.worker import job_worker
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,31 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 # ---------------------------------------------------------------------------
 
 
+async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return JSONResponse(status_code=exc.status_code, content={"error": detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": "HTTP_ERROR", "message": str(detail), "details": {}}},
+    )
+
+
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "Request validation failed.",
+                "details": {"errors": exc.errors()},
+            }
+        },
+    )
+
+
 async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
@@ -93,7 +120,6 @@ def create_app() -> FastAPI:
     # This ensures CORS headers appear on 401 responses from AuthMiddleware —
     # without this, browsers see a CORS error instead of the actual 401.
     app.add_middleware(AuthMiddleware)
-    # Phase 3: app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -103,7 +129,10 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api/v1")
+    app.include_router(health_router)
 
+    app.add_exception_handler(HTTPException, _http_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, _validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, _global_exception_handler)  # type: ignore[arg-type]
 
     return app
