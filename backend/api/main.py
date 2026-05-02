@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from api.config import Settings, get_settings
 from api.database import init_db, startup_recovery
+from api.middleware.auth import AuthMiddleware
 from api.routes import api_router
 from api.worker import job_worker
 
@@ -87,6 +88,12 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    # Starlette applies middleware LIFO: last registered = outermost layer.
+    # AuthMiddleware is added first (innermost); CORSMiddleware is added last (outermost).
+    # This ensures CORS headers appear on 401 responses from AuthMiddleware —
+    # without this, browsers see a CORS error instead of the actual 401.
+    app.add_middleware(AuthMiddleware)
+    # Phase 3: app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -94,9 +101,6 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
-
-    # Phase 2: app.add_middleware(AuthMiddleware, settings=settings)
-    # Phase 3: app.add_middleware(RateLimitMiddleware, settings=settings)
 
     app.include_router(api_router, prefix="/api/v1")
 
