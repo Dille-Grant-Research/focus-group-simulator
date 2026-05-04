@@ -18,14 +18,14 @@ _IMPORT_DEFAULTS = {
     "OLLAMA_HOST": "localhost",
     "OLLAMA_PORT": "11434",
     "OLLAMA_MODEL": "test-model",
-    "ENTRA_TENANT_ID": "test-tenant-id",
-    "ENTRA_CLIENT_ID": "test-client-id",
+    "ENTRA_TENANT_ID": "test-tenant-id", # We won't actully hard code this and cuase an error is not set
+    "ENTRA_CLIENT_ID": "test-client-id", # We won't actully hard code this and cuase an error is not set
     "ENTRA_CLIENT_SECRET": "test-client-secret-placeholder",
     "ENTRA_REDIRECT_URI": "http://localhost/api/v1/auth/callback",
     "FRONTEND_URL": "http://localhost",
-    "SESSION_SECRET_KEY": "test-session-key-placeholder",
-    "DB_PATH": "/tmp/focus_group_api_test_import.db",
-    "MAX_JOBS_PER_HOUR": "3",
+    "SESSION_SECRET_KEY": "test-session-key-placeholder", # We won't actully hard code this and cuase an error is not set
+    "DB_PATH": "/tmp/focus_group_api_test_import.db", # Why not /mnt or actually temp works for now
+    "MAX_JOBS_PER_HOUR": "3", # Should be modified based on the VRAM also taking KV cache into account
 }
 for _k, _v in _IMPORT_DEFAULTS.items():
     os.environ.setdefault(_k, _v)
@@ -65,6 +65,7 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
         "DB_PATH": db_path,
         "MAX_JOBS_PER_HOUR": "3",
         "LOG_LEVEL": "WARNING",
+        "DEV_AUTH_BYPASS": "false",
     }
     for k, v in test_envs.items():
         monkeypatch.setenv(k, v)

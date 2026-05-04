@@ -38,6 +38,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         settings = get_settings()
+
+        if settings.DEV_AUTH_BYPASS:
+            request.state.user_id = "dev-user-local"
+            try:
+                async with get_db(settings.DB_PATH) as db:
+                    await upsert_user(db, "dev-user-local")
+            except Exception:
+                logger.exception("DEV_AUTH_BYPASS: failed to upsert dev user")
+            return await call_next(request)
+
         session_cookie = request.cookies.get("session")
         if not session_cookie:
             return _unauthenticated("No session cookie present.")

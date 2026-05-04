@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # Dev-only: bypass MSAL entirely and inject a fixed local user_id.
+    # NEVER set this to true in production.
+    DEV_AUTH_BYPASS: bool = False
+
     # --- derived properties ---
 
     @property

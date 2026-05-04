@@ -16,7 +16,7 @@ from api.config import Settings
 
 logger = logging.getLogger(__name__)
 
-_SCOPES = ["openid", "profile", "email"]
+_SCOPES: list[str] = []  # MSAL adds openid/profile automatically; reserved scopes cannot be passed explicitly
 _FLOW_COOKIE_MAX_AGE = 600  # seconds — time window to complete the login redirect
 SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days — exported for use by routes and middleware
 
