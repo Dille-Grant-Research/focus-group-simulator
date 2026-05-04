@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronLeft, Download, FileDown, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import StatusBadge from "@/components/StatusBadge";
 import TranscriptViewer from "@/components/TranscriptViewer";
-import { api, type JobStatus, type JobStatusResponse, type JobResultResponse, type ApiError } from "@/lib/api";
+import { api, type JobStatus, type JobStatusResponse, type JobResultResponse, type ApiError, type SessionResultData } from "@/lib/api";
+import { downloadPDF, downloadDocx, downloadStanceCSV } from "@/lib/export";
 
 const POLL_INTERVAL: Record<string, number> = {
   queued: 10_000,
@@ -186,6 +187,13 @@ function JobMeta({ status }: { status: JobStatusResponse }) {
   );
 }
 
+function hasAnyNonverbals(result: SessionResultData): boolean {
+  return (
+    result.question_results.some((qr) => qr.nonverbal_reactions.length > 0) ||
+    (result.closing_result?.nonverbal_reactions.length ?? 0) > 0
+  );
+}
+
 function StatusContent({
   status,
   result,
@@ -233,20 +241,142 @@ function StatusContent({
   if (status.status === "completed" && result) {
     return (
       <div>
-        <h2 className="text-base font-semibold mb-4">
-          Transcript
-          {result.result.session_name && (
-            <span className="font-normal text-muted-foreground ml-2">
-              — {result.result.session_name}
-            </span>
-          )}
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold">
+            Transcript
+            {result.result.session_name && (
+              <span className="font-normal text-muted-foreground ml-2">
+                — {result.result.session_name}
+              </span>
+            )}
+          </h2>
+          <div className="flex items-center gap-2">
+            {result.result.stance_matrix_dump && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() =>
+                  downloadStanceCSV(
+                    result.result.stance_matrix_dump!,
+                    result.result.session_name
+                  )
+                }
+              >
+                <FileDown className="h-3.5 w-3.5 mr-1" />
+                Stance CSV
+              </Button>
+            )}
+            <ExportPanel result={result.result} />
+          </div>
+        </div>
         <TranscriptViewer result={result.result} metadata={result.metadata} />
       </div>
     );
   }
 
   return null;
+}
+
+function ExportPanel({ result }: { result: SessionResultData }) {
+  const [open, setOpen] = useState(false);
+  const [format, setFormat] = useState<"pdf" | "docx">("pdf");
+  const [includeNonVerbals, setIncludeNonVerbals] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const nonverbalsAvailable = hasAnyNonverbals(result);
+
+  async function handleDownload() {
+    setExporting(true);
+    try {
+      if (format === "pdf") {
+        downloadPDF(result, includeNonVerbals, result.session_name);
+      } else {
+        await downloadDocx(result, includeNonVerbals, result.session_name);
+      }
+      setOpen(false);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Download className="h-3.5 w-3.5 mr-1" />
+        Export
+      </Button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-60 rounded border border-border bg-background shadow-md p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Export transcript
+            </span>
+            <button
+              onClick={() => setOpen(false)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="Close"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div>
+            <p className="text-xs text-muted-foreground mb-2">Format</p>
+            <div className="flex gap-2">
+              {(["pdf", "docx"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFormat(f)}
+                  className={[
+                    "flex-1 py-1.5 text-xs font-medium border rounded transition-colors",
+                    format === f
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background text-foreground hover:bg-secondary",
+                  ].join(" ")}
+                >
+                  {f.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="export-nonverbals"
+              type="checkbox"
+              checked={includeNonVerbals}
+              disabled={!nonverbalsAvailable}
+              onChange={(e) => setIncludeNonVerbals(e.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <label
+              htmlFor="export-nonverbals"
+              className={`text-xs ${nonverbalsAvailable ? "" : "text-muted-foreground"}`}
+            >
+              {nonverbalsAvailable
+                ? "Include non-verbal reactions"
+                : "No non-verbals in this session"}
+            </label>
+          </div>
+
+          <Button
+            size="sm"
+            className="w-full"
+            onClick={handleDownload}
+            disabled={exporting}
+          >
+            {exporting ? "Preparing…" : "Download"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function fmt(iso: string): string {

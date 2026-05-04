@@ -76,6 +76,7 @@ interface FormState {
   enable_memory: boolean;
   working_memory_window: string;
   validate_personas: boolean;
+  exclude_nonverbals: boolean;
   showAdvanced: boolean;
 }
 
@@ -191,6 +192,7 @@ export default function NewSimulationPage() {
     enable_memory: false,
     working_memory_window: "10",
     validate_personas: true,
+    exclude_nonverbals: true,
     showAdvanced: false,
   });
 
@@ -401,6 +403,7 @@ export default function NewSimulationPage() {
     }
 
     config.validate_personas = form.validate_personas;
+    config.exclude_nonverbals = form.exclude_nonverbals;
 
     setSubmitting(true);
     try {
@@ -421,7 +424,8 @@ export default function NewSimulationPage() {
     form.temperature !== "0.7" ||
     form.num_ctx !== "8192" ||
     form.enable_memory ||
-    !form.validate_personas;
+    !form.validate_personas ||
+    !form.exclude_nonverbals;
 
   return (
     <div className="max-w-6xl">
@@ -721,6 +725,21 @@ export default function NewSimulationPage() {
                     Validate generated personas
                   </label>
                 </div>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    id="exclude-nonverbals"
+                    type="checkbox"
+                    checked={form.exclude_nonverbals}
+                    onChange={(e) =>
+                      setField("exclude_nonverbals", e.target.checked)
+                    }
+                    className="h-4 w-4 accent-primary"
+                  />
+                  <label htmlFor="exclude-nonverbals" className="text-sm">
+                    Exclude non-verbal reactions from transcript
+                  </label>
+                </div>
               </div>
             )}
           </div>
@@ -801,6 +820,9 @@ export default function NewSimulationPage() {
                   )}
                   {!form.validate_personas && (
                     <ReviewKV label="Validate personas" value="Disabled" />
+                  )}
+                  {!form.exclude_nonverbals && (
+                    <ReviewKV label="Non-verbal reactions" value="Included" />
                   )}
                 </ReviewSection>
               )}

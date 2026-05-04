@@ -79,6 +79,15 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
                 session = FocusGroupSession(provider=provider, config=config)
 
                 result = await session.run()
+
+                if config.exclude_nonverbals:
+                    for qr in result.question_results:
+                        qr.nonverbal_reactions = []
+                    if result.closing_result:
+                        result.closing_result.nonverbal_reactions = []
+                    if result.introduction_result:
+                        result.introduction_result.reactions = []
+
                 result_dict = result.to_dict()
 
                 await update_job(

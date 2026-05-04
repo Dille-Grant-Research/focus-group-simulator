@@ -269,6 +269,11 @@ class SessionConfig(BaseModel):
         default=True,
         description="Whether to validate generated personas",
     )
+    exclude_nonverbals: bool = Field(
+        default=True,
+        description="Strip non-verbal reactions from the stored result. "
+                    "The simulation still generates them internally for dual-context purposes.",
+    )
     session_name: str | None = Field(
         default=None,
         description="Optional name for the session (used in output filenames)",
