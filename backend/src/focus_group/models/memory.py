@@ -234,6 +234,46 @@ class StanceMatrix(BaseModel):
 
         return {name: stance.to_brief() for name, stance in self.stances[question_index].items()}
 
+    def to_display_dict(
+        self,
+        questions: list[str],
+        closing_question: str | None = None,
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Serialize to a human-readable dict suitable for frontend display.
+
+        Replaces integer question-index keys with labeled question text so the
+        serialized JSON never contains bare "0" / "1" keys.
+
+        Args:
+            questions: Ordered list of main question strings from SessionConfig.
+            closing_question: Optional closing question text from SessionConfig.
+
+        Returns:
+            Nested dict: {question_label: {participant_name: stance_fields}}
+        """
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        closing_index = len(questions)
+
+        for q_idx, participant_stances in self.stances.items():
+            if q_idx < len(questions):
+                label = f"Q{q_idx + 1}: {questions[q_idx]}"
+            elif q_idx == closing_index and closing_question:
+                label = f"Closing: {closing_question}"
+            else:
+                label = f"Question {q_idx + 1}"
+
+            result[label] = {
+                name: {
+                    "position": stance.position.value,
+                    "key_points": stance.key_points,
+                    "sentiment_score": stance.sentiment_score,
+                    "contribution_count": stance.contribution_count,
+                }
+                for name, stance in participant_stances.items()
+            }
+
+        return result
+
 
 # =============================================================================
 # TIER 2: QUESTION MEMORY

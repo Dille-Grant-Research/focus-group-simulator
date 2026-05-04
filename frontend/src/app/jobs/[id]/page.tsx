@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, RefreshCw } from "lucide-react";
+import { ChevronLeft, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
@@ -18,13 +18,28 @@ const POLL_INTERVAL: Record<string, number> = {
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [status, setStatus] = useState<JobStatusResponse | null>(null);
   const [result, setResult] = useState<JobResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchStatus = async () => {
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await api.jobs.delete(id);
+      router.push("/");
+    } catch (err) {
+      setError((err as Error).message);
+      setDeleting(false);
+      setDeleteConfirm(false);
+    }
+  };
+
+  const fetchStatus = useCallback(async () => {
     try {
       const data = await api.jobs.getStatus(id);
       setStatus(data);
@@ -41,12 +56,11 @@ export default function JobDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     fetchStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [fetchStatus]);
 
   useEffect(() => {
     if (!status) return;
@@ -60,11 +74,10 @@ export default function JobDetailPage() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, fetchStatus]);
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-6xl">
       <div className="flex items-center justify-between mb-6">
         <Link
           href="/"
@@ -74,15 +87,50 @@ export default function JobDetailPage() {
           Back to dashboard
         </Link>
         {status && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={fetchStatus}
-            className="text-muted-foreground"
-          >
-            <RefreshCw className="h-3.5 w-3.5 mr-1" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            {status.status !== "running" && (
+              deleteConfirm ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-destructive font-medium">Delete this job?</span>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleDelete}
+                    disabled={deleting}
+                  >
+                    {deleting ? "Deleting…" : "Yes, delete"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDeleteConfirm(false)}
+                    disabled={deleting}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeleteConfirm(true)}
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                  Delete
+                </Button>
+              )
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={fetchStatus}
+              className="text-muted-foreground"
+            >
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />
+              Refresh
+            </Button>
+          </div>
         )}
       </div>
 

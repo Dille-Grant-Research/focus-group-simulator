@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Bebas_Neue, Source_Sans_3 } from "next/font/google";
 import "./globals.css";
-import Link from "next/link";
+import HeaderClient from "@/components/HeaderClient";
 
 const bebasNeue = Bebas_Neue({
   weight: "400",
@@ -32,35 +32,7 @@ export default function RootLayout({
     >
       <body className="font-sans min-h-full flex flex-col bg-background text-foreground antialiased">
         <div className="h-[3px] bg-primary w-full" />
-        <header className="bg-primary text-primary-foreground shadow-sm">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="flex h-14 items-center justify-between">
-              <Link href="/" className="flex items-center gap-3">
-                <span className="font-heading text-xl tracking-widest uppercase leading-none">
-                  Minnesota State Moorhead
-                </span>
-                <span className="hidden sm:block h-4 w-px bg-primary-foreground/30" />
-                <span className="hidden sm:block text-primary-foreground/80 text-sm font-normal">
-                  Focus Group Simulator
-                </span>
-              </Link>
-              <nav className="flex items-center gap-5 text-sm">
-                <Link
-                  href="/"
-                  className="text-primary-foreground/85 hover:text-primary-foreground transition-colors"
-                >
-                  Dashboard
-                </Link>
-                <a
-                  href="/api/v1/auth/logout"
-                  className="text-primary-foreground/85 hover:text-primary-foreground transition-colors"
-                >
-                  Sign out
-                </a>
-              </nav>
-            </div>
-          </div>
-        </header>
+        <HeaderClient />
 
         <main className="flex-1">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">

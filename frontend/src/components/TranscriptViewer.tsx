@@ -52,12 +52,7 @@ export default function TranscriptViewer({ result, metadata }: Props) {
       {result.stance_matrix_dump && (
         <>
           <Separator />
-          <div>
-            <h3 className="text-sm font-semibold mb-2 text-foreground">Stance Analysis</h3>
-            <pre className="text-xs bg-secondary rounded p-4 overflow-auto max-h-64 text-muted-foreground">
-              {JSON.stringify(result.stance_matrix_dump, null, 2)}
-            </pre>
-          </div>
+          <StanceMatrixViewer data={result.stance_matrix_dump} />
         </>
       )}
 
@@ -96,6 +91,102 @@ interface QuestionResult {
     reaction: string;
     response_turn: number | null;
   }>;
+}
+
+interface ParticipantStanceData {
+  position: string;
+  key_points: string[];
+  sentiment_score: number;
+  contribution_count: number;
+}
+
+const POSITION_STYLES: Record<string, string> = {
+  supportive: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+  skeptical: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+  neutral: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  mixed: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
+  not_contributed: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
+};
+
+function StanceMatrixViewer({ data }: { data: Record<string, unknown> }) {
+  const entries = Object.entries(data);
+  return (
+    <div>
+      <h3 className="text-sm font-semibold mb-3 text-foreground">Stance Analysis</h3>
+      <div className="space-y-3">
+        {entries.map(([question, participants]) => (
+          <QuestionStanceTable
+            key={question}
+            question={question}
+            participants={participants as Record<string, ParticipantStanceData>}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QuestionStanceTable({
+  question,
+  participants,
+}: {
+  question: string;
+  participants: Record<string, ParticipantStanceData>;
+}) {
+  const rows = Object.entries(participants ?? {});
+  return (
+    <details open className="rounded border border-border overflow-hidden">
+      <summary className="px-4 py-2.5 bg-secondary text-xs font-semibold text-foreground cursor-pointer select-none hover:bg-secondary/80 transition-colors list-none flex items-center justify-between">
+        <span>{question}</span>
+        <span className="text-muted-foreground font-normal">{rows.length} participant{rows.length !== 1 ? "s" : ""}</span>
+      </summary>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border bg-background">
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground">Participant</th>
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground">Position</th>
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground w-24">Sentiment</th>
+              <th className="text-center px-4 py-2 font-medium text-muted-foreground">Turns</th>
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground">Key Points</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rows.map(([name, stance]) => {
+              const posStyle = POSITION_STYLES[stance.position] ?? POSITION_STYLES.neutral;
+              return (
+                <tr key={name} className="hover:bg-secondary/30 transition-colors">
+                  <td className="px-4 py-2.5 font-medium text-foreground whitespace-nowrap">{name}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${posStyle}`}>
+                      {(stance.position ?? "—").replace(/_/g, " ")}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    <div className="flex items-center gap-2">
+                      <div className="w-14 h-1.5 bg-border rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full"
+                          style={{ width: `${Math.round((stance.sentiment_score ?? 0) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-muted-foreground">{(stance.sentiment_score ?? 0).toFixed(1)}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-center text-muted-foreground">{stance.contribution_count ?? 0}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">
+                    {stance.key_points?.length > 0
+                      ? stance.key_points.join("; ")
+                      : <span className="italic">—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
 }
 
 function QuestionBlock({

@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, Plus, Minus, Check, X } from "lucide-react";
+import { ChevronLeft, Plus, Minus, Check, X, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,7 +24,7 @@ import {
   CardContent,
   CardFooter,
 } from "@/components/ui/card";
-import { api, type ApiError } from "@/lib/api";
+import { api, type ApiError, type GenerateResponse } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,7 @@ const STEP_LABELS = ["Session", "Participants", "Discussion", "Review"] as const
 
 interface Participant {
   id: string;
+  name: string;
   gender: string;
   age: string;
   location: string;
@@ -64,6 +65,7 @@ interface Participant {
 }
 
 interface FormState {
+  research_topic: string;
   session_name: string;
   purpose: string;
   participants: Participant[];
@@ -84,6 +86,7 @@ type ParticipantErrors = Record<string, Partial<Record<keyof Participant, string
 function newParticipant(): Participant {
   return {
     id: crypto.randomUUID(),
+    name: "",
     gender: "",
     age: "",
     location: "",
@@ -105,11 +108,61 @@ function serializeParticipant(p: Participant): string {
 }
 
 function participantLabel(p: Participant): string {
+  if (p.name.trim()) return p.name.trim();
   return (
     [p.gender, p.age ? `age ${p.age}` : null, p.occupation || null]
       .filter(Boolean)
       .join(", ") || "Incomplete"
   );
+}
+
+function deserializeParticipant(raw: string): Participant {
+  const tokens = raw.split(", ").map((t) => t.trim()).filter(Boolean);
+  const p = newParticipant();
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+
+    if (GENDER_OPTIONS.some((g) => g.toLowerCase() === lower)) {
+      p.gender = GENDER_OPTIONS.find((g) => g.toLowerCase() === lower) ?? "";
+      continue;
+    }
+
+    const ageMatch = token.match(/^age\s+(\d+)$/i);
+    if (ageMatch) {
+      p.age = ageMatch[1];
+      continue;
+    }
+
+    if (LOCATION_OPTIONS.some((l) => l.toLowerCase() === lower)) {
+      p.location = LOCATION_OPTIONS.find((l) => l.toLowerCase() === lower) ?? "";
+      continue;
+    }
+
+    const stanceMatch = STANCE_OPTIONS.find(
+      (s) => lower === `${s.toLowerCase()} perspective`
+    );
+    if (stanceMatch) {
+      p.stance = stanceMatch;
+      continue;
+    }
+
+    const registerMatch = REGISTER_OPTIONS.find(
+      (r) => lower === `${r.toLowerCase()} communicator`
+    );
+    if (registerMatch) {
+      p.register = registerMatch;
+      continue;
+    }
+
+    if (!p.occupation) {
+      p.occupation = token;
+    } else if (!p.background) {
+      p.background = token;
+    }
+  }
+
+  return p;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -122,8 +175,12 @@ export default function NewSimulationPage() {
   const [stepErrors, setStepErrors] = useState<Record<number, string>>({});
   const [participantCardErrors, setParticipantCardErrors] =
     useState<ParticipantErrors>({});
+  const [generatingParticipants, setGeneratingParticipants] = useState(false);
+  const [generatingQuestions, setGeneratingQuestions] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   const [form, setForm] = useState<FormState>({
+    research_topic: "",
     session_name: "",
     purpose: "",
     participants: [newParticipant(), newParticipant()],
@@ -198,6 +255,62 @@ export default function NewSimulationPage() {
     });
   }
 
+  function applyGenerateResponse(data: GenerateResponse, target: "participants" | "questions" | "both") {
+    setGenerateError(null);
+    setForm((prev) => {
+      const next = { ...prev };
+      if (target === "participants" || target === "both") {
+        if (data.demographics.length > 0) {
+          next.participants = data.demographics.map(deserializeParticipant);
+        }
+        if (data.session_name && !prev.session_name) next.session_name = data.session_name;
+        if (data.purpose && !prev.purpose) next.purpose = data.purpose;
+      }
+      if (target === "questions" || target === "both") {
+        if (data.questions.length > 0) {
+          next.questions = data.questions;
+        }
+      }
+      return next;
+    });
+  }
+
+  async function handleGenerateParticipants() {
+    if (!form.research_topic.trim()) return;
+    setGeneratingParticipants(true);
+    setGenerateError(null);
+    try {
+      const data = await api.generate({
+        research_topic: form.research_topic.trim(),
+        num_participants: form.participants.length,
+        num_questions: 1,
+      });
+      applyGenerateResponse(data, "participants");
+    } catch (err) {
+      setGenerateError((err as Error).message ?? "Auto-generation failed. Try again.");
+    } finally {
+      setGeneratingParticipants(false);
+    }
+  }
+
+  async function handleGenerateQuestions() {
+    if (!form.research_topic.trim()) return;
+    setGeneratingQuestions(true);
+    setGenerateError(null);
+    try {
+      const data = await api.generate({
+        research_topic: form.research_topic.trim(),
+        num_participants: 1,
+        num_questions: form.questions.length,
+      });
+      applyGenerateResponse(data, "questions");
+    } catch (err) {
+      setGenerateError((err as Error).message ?? "Auto-generation failed. Try again.");
+    } finally {
+      setGeneratingQuestions(false);
+    }
+  }
+
   function validateAndAdvance() {
     setStepErrors({});
 
@@ -255,10 +368,14 @@ export default function NewSimulationPage() {
     const demographics = form.participants.map(serializeParticipant);
     const nonEmptyQuestions = form.questions.filter((q) => q.trim());
 
+    const participantNames = form.participants.map((p) => p.name.trim() || null);
+    const hasAnyName = participantNames.some(Boolean);
+
     const config: Record<string, unknown> = {
       demographics,
       questions: nonEmptyQuestions,
     };
+    if (hasAnyName) config.participant_names = participantNames;
 
     if (form.session_name.trim()) config.session_name = form.session_name.trim();
     if (form.purpose.trim()) config.purpose = form.purpose.trim();
@@ -307,7 +424,7 @@ export default function NewSimulationPage() {
     !form.validate_personas;
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-6xl">
       <Link
         href="/"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6 transition-colors"
@@ -330,6 +447,17 @@ export default function NewSimulationPage() {
       {step === 1 && (
         <div className="space-y-8">
           <Section title="Session Details">
+            <Field
+              label="Research topic"
+              hint="Used to auto-generate participants and questions in later steps"
+            >
+              <Input
+                value={form.research_topic}
+                onChange={(e) => setField("research_topic", e.target.value)}
+                placeholder="e.g. Telehealth adoption in rural Minnesota"
+                maxLength={500}
+              />
+            </Field>
             <Field label="Session name" hint="Optional — max 100 characters">
               <Input
                 value={form.session_name}
@@ -366,11 +494,33 @@ export default function NewSimulationPage() {
             <p className="text-sm text-muted-foreground">
               Add 1–15 focus group participants with demographic details.
             </p>
-            <span className="text-sm font-medium shrink-0 ml-4">
-              {form.participants.length} participant
-              {form.participants.length !== 1 ? "s" : ""}
-            </span>
+            <div className="flex items-center gap-3 shrink-0 ml-4">
+              <span className="text-sm font-medium">
+                {form.participants.length} participant
+                {form.participants.length !== 1 ? "s" : ""}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateParticipants}
+                disabled={generatingParticipants || !form.research_topic.trim()}
+                title={!form.research_topic.trim() ? "Enter a research topic in Step 1 first" : undefined}
+              >
+                {generatingParticipants ? (
+                  <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Generating…</>
+                ) : (
+                  <><Sparkles className="h-3.5 w-3.5 mr-1.5" />Auto-generate</>
+                )}
+              </Button>
+            </div>
           </div>
+
+          {generateError && step === 2 && (
+            <div className="border border-destructive/30 bg-destructive/10 text-destructive px-4 py-3 text-sm">
+              {generateError}
+            </div>
+          )}
 
           {form.participants.map((p, i) => (
             <ParticipantCard
@@ -413,8 +563,29 @@ export default function NewSimulationPage() {
       {/* ── Step 3: Discussion ── */}
       {step === 3 && (
         <div className="space-y-8">
+          {generateError && (
+            <div className="border border-destructive/30 bg-destructive/10 text-destructive px-4 py-3 text-sm">
+              {generateError}
+            </div>
+          )}
           <Section
             title={`Questions (${nonEmptyQuestions.length}/20)`}
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateQuestions}
+                disabled={generatingQuestions || !form.research_topic.trim()}
+                title={!form.research_topic.trim() ? "Enter a research topic in Step 1 first" : undefined}
+              >
+                {generatingQuestions ? (
+                  <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Generating…</>
+                ) : (
+                  <><Sparkles className="h-3.5 w-3.5 mr-1.5" />Auto-generate</>
+                )}
+              </Button>
+            }
           >
             <div className="space-y-2">
               {form.questions.map((q, i) => (
@@ -739,7 +910,7 @@ function ParticipantCard({
   errors,
 }: ParticipantCardProps) {
   const hasLabel =
-    participant.gender || participant.age || participant.occupation;
+    participant.name || participant.gender || participant.age || participant.occupation;
 
   return (
     <Card>
@@ -766,6 +937,15 @@ function ParticipantCard({
       </CardHeader>
 
       <CardContent className="pt-4">
+        <div className="mb-4">
+          <Field label="Name" hint="Optional — leave blank to autogenerate">
+            <Input
+              value={participant.name}
+              onChange={(e) => onChange("name", e.target.value)}
+              placeholder="e.g. Jordan Lee"
+            />
+          </Field>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Gender" error={errors.gender}>
             <Select
@@ -887,16 +1067,21 @@ function ParticipantCard({
 
 function Section({
   title,
+  action,
   children,
 }: {
   title: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div>
-      <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide mb-3 pb-2 border-b border-border">
-        {title}
-      </h2>
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-border">
+        <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide">
+          {title}
+        </h2>
+        {action}
+      </div>
       <div className="space-y-4">{children}</div>
     </div>
   );

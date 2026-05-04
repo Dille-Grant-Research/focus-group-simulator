@@ -24,6 +24,7 @@ export interface JobSummary {
   participant_count: number | null;
   total_turns: number | null;
   consensus_level: string | null;
+  session_name: string | null;
 }
 
 export interface ParticipantResponse {
@@ -89,6 +90,19 @@ export interface ApiError extends Error {
   code?: string;
 }
 
+export interface GenerateRequest {
+  research_topic: string;
+  num_participants?: number;
+  num_questions?: number;
+}
+
+export interface GenerateResponse {
+  session_name: string;
+  purpose: string;
+  demographics: string[];
+  questions: string[];
+}
+
 function handleUnauthorized() {
   if (typeof window !== "undefined") {
     window.location.href = "/api/v1/auth/login";
@@ -120,6 +134,12 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  generate: (params: GenerateRequest) =>
+    apiFetch<GenerateResponse>("/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
   jobs: {
     create: (config: Record<string, unknown>) =>
       apiFetch<JobSubmitResponse>("/jobs", {

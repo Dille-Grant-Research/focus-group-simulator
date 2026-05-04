@@ -82,6 +82,7 @@ class JobSummary(BaseModel):
     participant_count: int | None
     total_turns: int | None
     consensus_level: str | None
+    session_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,7 @@ async def list_jobs(
             participant_count=row["participant_count"],
             total_turns=row["total_turns"],
             consensus_level=row["consensus_level"],
+            session_name=json.loads(row["config_json"]).get("session_name"),
         )
         for row in rows
     ]

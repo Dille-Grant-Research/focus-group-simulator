@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { Eye, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import StatusBadge from "@/components/StatusBadge";
 import type { JobSummary } from "@/lib/api";
@@ -30,10 +30,12 @@ const STATUS_STRIPE: Record<string, string> = {
 };
 
 export default function JobCard({ job, onDelete }: Props) {
+  const router = useRouter();
   const shortId = job.job_id.split("-")[0];
   const [confirming, setConfirming] = useState(false);
 
-  function handleDeleteClick() {
+  function handleDeleteClick(e: React.MouseEvent) {
+    e.stopPropagation();
     if (!confirming) {
       setConfirming(true);
       return;
@@ -41,16 +43,25 @@ export default function JobCard({ job, onDelete }: Props) {
     onDelete(job.job_id);
   }
 
+  const consensusLabel = job.consensus_level
+    ? job.consensus_level.charAt(0).toUpperCase() + job.consensus_level.slice(1)
+    : "—";
+
   return (
-    <tr className="hover:bg-secondary/40 transition-colors">
+    <tr
+      className="hover:bg-secondary/40 transition-colors cursor-pointer"
+      onClick={() => router.push(`/jobs/${job.job_id}`)}
+    >
       <td className={`px-4 py-3 ${STATUS_STRIPE[job.status] ?? ""}`}>
-        <Link
-          href={`/jobs/${job.job_id}`}
-          className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors"
-          title={job.job_id}
-        >
-          {shortId}…
-        </Link>
+        {job.session_name ? (
+          <span className="text-sm font-medium text-foreground truncate max-w-[180px] block">
+            {job.session_name}
+          </span>
+        ) : (
+          <span className="font-mono text-xs text-muted-foreground" title={job.job_id}>
+            {shortId}…
+          </span>
+        )}
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={job.status} />
@@ -64,7 +75,10 @@ export default function JobCard({ job, onDelete }: Props) {
       <td className="px-4 py-3 text-xs text-muted-foreground hidden md:table-cell">
         {fmt(job.created_at)}
       </td>
-      <td className="px-4 py-3 text-right">
+      <td className="px-4 py-3 text-xs text-muted-foreground hidden lg:table-cell">
+        {consensusLabel}
+      </td>
+      <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
         {confirming ? (
           <div className="flex items-center justify-end gap-2">
             <span className="text-xs text-destructive font-medium">Delete?</span>
@@ -78,18 +92,13 @@ export default function JobCard({ job, onDelete }: Props) {
             <Button
               variant="ghost"
               size="xs"
-              onClick={() => setConfirming(false)}
+              onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
             >
               Cancel
             </Button>
           </div>
         ) : (
           <div className="flex items-center justify-end gap-1">
-            <Button asChild variant="ghost" size="icon-sm">
-              <Link href={`/jobs/${job.job_id}`} aria-label="View job">
-                <Eye className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
             {job.status !== "running" && (
               <Button
                 variant="ghost"

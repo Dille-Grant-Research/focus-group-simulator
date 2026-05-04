@@ -290,7 +290,10 @@ class FocusGroupSession:
 
             # Serialize memory artifacts if memory system was enabled
             if self._focus_group_memory is not None:
-                result.stance_matrix_dump = self._focus_group_memory.stance_matrix.model_dump()
+                result.stance_matrix_dump = self._focus_group_memory.stance_matrix.to_display_dict(
+                    questions=self._config.questions,
+                    closing_question=self._config.closing_question,
+                )
                 result.participant_memory_dumps = [
                     {
                         "participant_name": p.name,
@@ -335,6 +338,7 @@ class FocusGroupSession:
             personas = await self._persona_generator.generate_personas(
                 demographics=self._config.demographics,
                 ensure_unique_names=True,
+                name_overrides=self._config.participant_names,
             )
         except PersonaGenerationError as e:
             error_msg = f"Failed to generate personas: {e}"

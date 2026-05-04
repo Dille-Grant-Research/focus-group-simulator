@@ -220,6 +220,11 @@ class SessionConfig(BaseModel):
         min_length=1,
         max_length=15,
     )
+    participant_names: list[str | None] | None = Field(
+        default=None,
+        description="Optional name overrides per participant, parallel to demographics. None entries = autogenerate.",
+        max_length=15,
+    )
     questions: list[str] = Field(
         description="List of focus group questions to discuss (in order)",
         min_length=1,

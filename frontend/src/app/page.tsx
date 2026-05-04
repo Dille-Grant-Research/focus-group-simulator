@@ -85,7 +85,7 @@ export default function DashboardPage() {
           <table className="w-full text-sm">
             <thead className="bg-secondary text-secondary-foreground">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Job ID</th>
+                <th className="text-left px-4 py-3 font-medium">Session</th>
                 <th className="text-left px-4 py-3 font-medium">Status</th>
                 <th className="text-left px-4 py-3 font-medium hidden sm:table-cell">
                   Participants
@@ -95,6 +95,9 @@ export default function DashboardPage() {
                 </th>
                 <th className="text-left px-4 py-3 font-medium hidden md:table-cell">
                   Submitted
+                </th>
+                <th className="text-left px-4 py-3 font-medium hidden lg:table-cell">
+                  Consensus
                 </th>
                 <th className="text-right px-4 py-3 font-medium">Actions</th>
               </tr>
