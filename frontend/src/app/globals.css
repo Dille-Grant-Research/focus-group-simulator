@@ -32,7 +32,7 @@
   --font-heading: var(--font-bebas-neue);
 }
 
-/* MSUM Brand Theme — Dragon Red */
+/* MSUM Brand Theme — Dragon Crimson #CE142C (PMS 186 C) */
 :root {
   --radius: 0rem;
   --background: oklch(0.998 0 0);
@@ -41,7 +41,7 @@
   --card-foreground: oklch(0.358 0.013 56);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.358 0.013 56);
-  --primary: oklch(0.527 0.232 17.6);
+  --primary: oklch(0.520 0.248 22);
   --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.933 0 0);
   --secondary-foreground: oklch(0.358 0.013 56);
@@ -53,7 +53,7 @@
   --destructive-foreground: oklch(1 0 0);
   --border: oklch(0.893 0 0);
   --input: oklch(0.893 0 0);
-  --ring: oklch(0.527 0.232 17.6);
+  --ring: oklch(0.520 0.248 22);
 }
 
 .dark {
@@ -63,7 +63,7 @@
   --card-foreground: oklch(0.95 0 0);
   --popover: oklch(0.20 0 0);
   --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.58 0.220 17.6);
+  --primary: oklch(0.600 0.248 22);
   --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.25 0 0);
   --secondary-foreground: oklch(0.95 0 0);
@@ -75,5 +75,5 @@
   --destructive-foreground: oklch(1 0 0);
   --border: oklch(0.30 0 0);
   --input: oklch(0.30 0 0);
-  --ring: oklch(0.58 0.220 17.6);
+  --ring: oklch(0.600 0.248 22);
 }

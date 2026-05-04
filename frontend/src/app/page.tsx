@@ -31,12 +31,11 @@ export default function DashboardPage() {
   };
 
   const handleDelete = async (jobId: string) => {
-    if (!confirm("Delete this simulation? This cannot be undone.")) return;
     try {
       await api.jobs.delete(jobId);
       setJobs((prev) => prev.filter((j) => j.job_id !== jobId));
     } catch (err) {
-      alert((err as Error).message);
+      setError((err as Error).message);
     }
   };
 

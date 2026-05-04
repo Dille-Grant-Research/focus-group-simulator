@@ -31,6 +31,7 @@ export default function RootLayout({
       className={`${bebasNeue.variable} ${sourceSans.variable} h-full`}
     >
       <body className="font-sans min-h-full flex flex-col bg-background text-foreground antialiased">
+        <div className="h-[3px] bg-primary w-full" />
         <header className="bg-primary text-primary-foreground shadow-sm">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="flex h-14 items-center justify-between">
