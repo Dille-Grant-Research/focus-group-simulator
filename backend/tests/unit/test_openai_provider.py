@@ -10,6 +10,7 @@ from focus_group.llm.factory import create_provider
 from focus_group.llm.openai_compat import (
     OpenAICompatibleProvider,
     OpenAIConnectionError,
+    strip_reasoning,
 )
 from focus_group.models.config import (
     CloudModelConfig,
@@ -52,6 +53,42 @@ def provider_no_key(cloud_config: CloudModelConfig) -> OpenAICompatibleProvider:
         # Ensure the env var is not set
         os.environ.pop("TEST_OPENAI_KEY", None)
         return OpenAICompatibleProvider(cloud_config)
+
+
+_TEST_TIMEOUT_SECONDS = 45.0
+
+
+@pytest.fixture
+def provider_unauthenticated() -> OpenAICompatibleProvider:
+    """Provider for a keyless endpoint (api_key_env_var=None)."""
+    return OpenAICompatibleProvider(
+        CloudModelConfig(
+            provider=LLMProviderType.OPENAI,
+            model_name="test-model",
+            base_url="http://cruncher.test:1234",
+            request_timeout_seconds=_TEST_TIMEOUT_SECONDS,
+        )
+    )
+
+
+def _mock_client(post: AsyncMock | None = None, get: AsyncMock | None = None) -> AsyncMock:
+    """Create a mock httpx.AsyncClient usable as an async context manager."""
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    if post is not None:
+        mock_client.post = post
+    if get is not None:
+        mock_client.get = get
+    return mock_client
+
+
+def _models_response(model_ids: list[str]) -> httpx.Response:
+    """Create a /v1/models list response."""
+    return _mock_response(
+        200,
+        json_data={"object": "list", "data": [{"id": i, "object": "model"} for i in model_ids]},
+    )
 
 
 def _mock_response(
@@ -307,51 +344,112 @@ class TestErrorHandling:
 
 
 class TestIsAvailable:
-    """Tests for the is_available method."""
+    """Tests for the is_available method (GET /v1/models)."""
 
     @pytest.mark.asyncio
-    async def test_available_with_valid_key(
+    async def test_available_when_model_listed(
         self, provider_with_key: OpenAICompatibleProvider
     ) -> None:
-        """Returns True when API responds successfully."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=_success_response())
+        """Returns True when the configured model is in the model list."""
+        mock_client = _mock_client(get=AsyncMock(return_value=_models_response(["test-model"])))
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
             assert await provider_with_key.is_available() is True
 
+        mock_client.get.assert_called_once()
+        assert mock_client.get.call_args[0][0] == "https://api.test.com/v1/models"
+
     @pytest.mark.asyncio
     async def test_unavailable_without_key(self, provider_no_key: OpenAICompatibleProvider) -> None:
-        """Returns False when no API key is set."""
+        """Returns False when a key env var is configured but not set."""
         assert await provider_no_key.is_available() is False
 
     @pytest.mark.asyncio
-    async def test_unavailable_on_auth_failure(
-        self, provider_with_key: OpenAICompatibleProvider
+    @pytest.mark.parametrize(
+        "get_mock",
+        [
+            pytest.param(AsyncMock(return_value=_models_response(["other-model"])), id="model-missing"),
+            pytest.param(AsyncMock(return_value=_mock_response(401, text="Unauthorized")), id="auth-401"),
+            pytest.param(AsyncMock(return_value=_mock_response(500, text="boom")), id="server-500"),
+            pytest.param(AsyncMock(return_value=_mock_response(200, text="not json")), id="bad-json"),
+            pytest.param(AsyncMock(side_effect=httpx.ConnectError("refused")), id="network-error"),
+        ],
+    )
+    async def test_unavailable(
+        self, provider_with_key: OpenAICompatibleProvider, get_mock: AsyncMock
     ) -> None:
-        """Returns False when API returns 401."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=_mock_response(401, text="Unauthorized"))
+        """Returns False when the model list can't confirm the configured model."""
+        mock_client = _mock_client(get=get_mock)
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
             assert await provider_with_key.is_available() is False
+
+
+# ============================================================================
+# Unauthenticated Endpoint Tests (e.g. self-hosted LM Studio)
+# ============================================================================
+
+
+class TestUnauthenticatedEndpoint:
+    """Provider configured with no API key env var at all."""
 
     @pytest.mark.asyncio
-    async def test_unavailable_on_network_error(
-        self, provider_with_key: OpenAICompatibleProvider
+    async def test_generate_sends_no_auth_header(
+        self, provider_unauthenticated: OpenAICompatibleProvider
     ) -> None:
-        """Returns False when network is unreachable."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        mock_client = _mock_client(post=AsyncMock(return_value=_success_response()))
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
-            assert await provider_with_key.is_available() is False
+            await provider_unauthenticated.generate("Hello")
+
+        assert "Authorization" not in mock_client.post.call_args[1]["headers"]
+
+    @pytest.mark.asyncio
+    async def test_available_without_key(
+        self, provider_unauthenticated: OpenAICompatibleProvider
+    ) -> None:
+        mock_client = _mock_client(get=AsyncMock(return_value=_models_response(["test-model"])))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider_unauthenticated.is_available() is True
+
+        assert "Authorization" not in mock_client.get.call_args[1]["headers"]
+
+    def test_uses_configured_timeout(self, provider_unauthenticated: OpenAICompatibleProvider) -> None:
+        assert provider_unauthenticated.config.request_timeout_seconds == _TEST_TIMEOUT_SECONDS
+
+
+# ============================================================================
+# Reasoning Stripping Tests
+# ============================================================================
+
+
+class TestStripReasoning:
+    """Qwen3-style <think> blocks must not leak into returned content."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("plain answer", "plain answer", id="no-think"),
+            pytest.param("<think>hmm</think>\n\nanswer", "answer", id="leading-think"),
+            pytest.param("<think>a\nb\nc</think>[1, 2]", "[1, 2]", id="multiline-think"),
+            pytest.param("<think>never closed", "", id="truncated-think"),
+            pytest.param("<think></think>answer", "answer", id="empty-think"),
+        ],
+    )
+    def test_strip_reasoning(self, raw: str, expected: str) -> None:
+        assert strip_reasoning(raw) == expected
+
+    @pytest.mark.asyncio
+    async def test_generate_strips_reasoning(
+        self, provider_with_key: OpenAICompatibleProvider
+    ) -> None:
+        mock_client = _mock_client(
+            post=AsyncMock(return_value=_success_response("<think>reasoning</think>\n{\"a\": 1}"))
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider_with_key.generate("Hello") == '{"a": 1}'
 
 
 # ============================================================================
@@ -457,3 +555,9 @@ class TestConfigParsing:
         assert config.temperature == 0.7
         assert config.top_p == 0.9
         assert config.num_ctx == 8192
+        assert config.request_timeout_seconds == 120.0
+
+    def test_cloud_config_api_key_optional(self) -> None:
+        """CloudModelConfig allows unauthenticated endpoints."""
+        config = CloudModelConfig(provider=LLMProviderType.OPENAI, model_name="test-model")
+        assert config.api_key_env_var is None

@@ -10,14 +10,24 @@ from functools import lru_cache
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from focus_group.llm.base import BaseLLMProvider
+from focus_group.llm.factory import create_provider
+from focus_group.models.config import CloudModelConfig, LLMProviderType, OllamaModelConfig
+
+DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300
+SUPPORTED_LLM_PROVIDERS = (LLMProviderType.OLLAMA, LLMProviderType.OPENAI)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Ollama / inference
-    OLLAMA_HOST: str
-    OLLAMA_PORT: int = 11434
-    OLLAMA_MODEL: str
+    # Inference
+    # "ollama" -> native Ollama API (/api/generate)
+    # "openai" -> any OpenAI-compatible server (/v1/chat/completions), e.g. MSUM cruncher
+    LLM_PROVIDER: LLMProviderType
+    LLM_BASE_URL: str  # scheme://host:port, no trailing /v1
+    LLM_MODEL: str
+    LLM_REQUEST_TIMEOUT_SECONDS: int = DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
 
     # Microsoft Entra SSO
     ENTRA_TENANT_ID: str
@@ -45,8 +55,8 @@ class Settings(BaseSettings):
     # --- derived properties ---
 
     @property
-    def ollama_base_url(self) -> str:
-        return f"http://{self.OLLAMA_HOST}:{self.OLLAMA_PORT}"
+    def llm_base_url(self) -> str:
+        return self.LLM_BASE_URL.rstrip("/")
 
     @property
     def entra_authority(self) -> str:
@@ -57,6 +67,13 @@ class Settings(BaseSettings):
         if not self.CORS_ORIGINS:
             return []
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @model_validator(mode="after")
+    def _check_llm_provider(self) -> "Settings":
+        if self.LLM_PROVIDER not in SUPPORTED_LLM_PROVIDERS:
+            supported = ", ".join(p.value for p in SUPPORTED_LLM_PROVIDERS)
+            raise ValueError(f"LLM_PROVIDER must be one of: {supported}")
+        return self
 
     @model_validator(mode="after")
     def _require_secrets(self) -> "Settings":
@@ -70,3 +87,19 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def build_llm_provider(settings: Settings) -> BaseLLMProvider:
+    """Build the inference provider used by the worker, /generate and /health."""
+    if settings.LLM_PROVIDER == LLMProviderType.OPENAI:
+        return create_provider(
+            CloudModelConfig(
+                provider=LLMProviderType.OPENAI,
+                model_name=settings.LLM_MODEL,
+                base_url=settings.llm_base_url,
+                request_timeout_seconds=settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            )
+        )
+    return create_provider(
+        OllamaModelConfig(model_name=settings.LLM_MODEL, base_url=settings.llm_base_url)
+    )

@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 
 from focus_group.llm.ollama import OllamaConnectionError
+from focus_group.llm.openai_compat import OpenAIConnectionError
 from tests.api.helpers import _TEST_USER_A, session_cookies
 from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
 
@@ -37,19 +38,19 @@ _QUESTIONS_JSON = json.dumps([
 
 
 def _make_provider(monkeypatch, responses: list[str]) -> None:
-    """Patch _build_provider in the generate route to return a sequential mock."""
+    """Patch build_llm_provider in the generate route to return a sequential mock."""
     provider = SequentialMockProvider(responses=responses, loop=False)
-    monkeypatch.setattr("api.routes.generate._build_provider", lambda _settings: provider)
+    monkeypatch.setattr("api.routes.generate.build_llm_provider", lambda _settings: provider)
 
 
-def _make_error_provider(monkeypatch) -> None:
-    """Patch _build_provider to raise OllamaConnectionError on generate."""
+def _make_error_provider(monkeypatch, error_type: type[Exception]) -> None:
+    """Patch build_llm_provider to raise the given connection error on generate."""
     class _ErrorProvider(MockLLMProvider):
         async def generate(self, prompt: str, system_prompt=None) -> str:  # type: ignore[override]
-            raise OllamaConnectionError("test: connection refused")
+            raise error_type("test: connection refused")
 
     monkeypatch.setattr(
-        "api.routes.generate._build_provider", lambda _settings: _ErrorProvider()
+        "api.routes.generate.build_llm_provider", lambda _settings: _ErrorProvider()
     )
 
 
@@ -171,14 +172,15 @@ async def test_generate_num_questions_too_many_returns_422(client: AsyncClient) 
 
 
 # ---------------------------------------------------------------------------
-# Ollama unavailable
+# Inference service unavailable
 # ---------------------------------------------------------------------------
 
 
-async def test_generate_ollama_unreachable_returns_503(
-    client: AsyncClient, monkeypatch
+@pytest.mark.parametrize("error_type", [OllamaConnectionError, OpenAIConnectionError])
+async def test_generate_llm_unreachable_returns_503(
+    client: AsyncClient, monkeypatch, error_type: type[Exception]
 ) -> None:
-    _make_error_provider(monkeypatch)
+    _make_error_provider(monkeypatch, error_type)
 
     resp = await client.post(
         "/api/v1/generate",

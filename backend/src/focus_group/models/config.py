@@ -58,8 +58,12 @@ class CloudModelConfig(BaseModel):
     model_name: str = Field(
         description="Name of the model to use",
     )
-    api_key_env_var: str = Field(
-        description="Name of environment variable containing the API key",
+    api_key_env_var: str | None = Field(
+        default=None,
+        description=(
+            "Name of environment variable containing the API key. "
+            "None for unauthenticated endpoints (e.g. a self-hosted LM Studio server)."
+        ),
     )
     base_url: str = Field(
         default="https://api.openai.com",
@@ -88,6 +92,11 @@ class CloudModelConfig(BaseModel):
         description="Context window size in tokens",
         ge=1024,
         le=131072,
+    )
+    request_timeout_seconds: float = Field(
+        default=120.0,
+        description="Per-request HTTP timeout for chat completions",
+        gt=0,
     )
 
 

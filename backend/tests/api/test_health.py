@@ -26,7 +26,7 @@ from tests.api.helpers import _MINIMAL_JOB_CONFIG, _TEST_USER_A, session_cookies
 
 
 async def test_health_all_components_ok(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_ollama_reachable(monkeypatch)
+    _patch_llm_reachable(monkeypatch)
 
     resp = await client.get("/health")
 
@@ -35,27 +35,27 @@ async def test_health_all_components_ok(client: AsyncClient, monkeypatch: pytest
     assert data["status"] == "healthy"
     assert data["components"]["database"] == "ok"
     assert data["components"]["worker"] == "alive"
-    assert data["components"]["ollama"] == "reachable"
+    assert data["components"]["llm"] == "reachable"
     assert "timestamp" in data
 
 
-async def test_health_degraded_when_ollama_unreachable(
+async def test_health_degraded_when_llm_unreachable(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_ollama_down(monkeypatch)
+    _patch_llm_down(monkeypatch)
 
     resp = await client.get("/health")
 
     assert resp.status_code == 503
     data = resp.json()
     assert data["status"] == "degraded"
-    assert data["components"]["ollama"] == "unreachable"
+    assert data["components"]["llm"] == "unreachable"
 
 
 async def test_health_degraded_when_worker_dead(
     app, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_ollama_reachable(monkeypatch)
+    _patch_llm_reachable(monkeypatch)
 
     # Replace the running worker task with a completed future to simulate crash
     loop = asyncio.get_running_loop()
@@ -74,15 +74,15 @@ async def test_health_degraded_when_worker_dead(
 async def test_health_returns_503_when_database_unreachable(
     app, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_ollama_reachable(monkeypatch)
+    _patch_llm_reachable(monkeypatch)
 
     # Point settings at a non-existent path to simulate DB failure
     from api.config import Settings
 
     bad_settings = Settings(
-        OLLAMA_HOST="localhost",
-        OLLAMA_PORT=11434,
-        OLLAMA_MODEL="test-model",
+        LLM_PROVIDER="ollama",
+        LLM_BASE_URL="http://localhost:11434",
+        LLM_MODEL="test-model",
         ENTRA_TENANT_ID="test-tenant-id",
         ENTRA_CLIENT_ID="test-client-id",
         ENTRA_CLIENT_SECRET="test-secret",
@@ -171,7 +171,7 @@ async def test_metrics_counts_completed_jobs(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _patch_ollama_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_llm_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_cli = AsyncMock()
@@ -182,7 +182,7 @@ def _patch_ollama_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "AsyncClient", MagicMock(return_value=mock_ctx))
 
 
-def _patch_ollama_down(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_llm_down(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_cli = AsyncMock()
     mock_cli.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
     mock_ctx = MagicMock()

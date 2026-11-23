@@ -124,9 +124,9 @@ These fields control simulation behavior. Most researchers can leave them at def
 
 **Type:** object  
 **Required:** No  
-**Default:** Ollama with the model configured in `OLLAMA_MODEL` environment variable
+**Default:** Ollama defaults (see below)
 
-Controls the LLM used for generation. In production, the default Ollama configuration points to the GPU machine.
+Controls the LLM used when running the engine directly. **When submitted through the API, the server ignores this connection info** and always uses the inference service configured by the `LLM_PROVIDER`, `LLM_BASE_URL` and `LLM_MODEL` environment variables (in production: the MSUM cruncher, an OpenAI-compatible endpoint).
 
 **Sub-fields:**
 

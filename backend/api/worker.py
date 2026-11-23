@@ -13,11 +13,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from api.config import Settings
+from api.config import Settings, build_llm_provider
 from api.database import delete_expired_jobs, get_db, get_next_queued_job, update_job
 from focus_group.core.session import FocusGroupSession
-from focus_group.llm.factory import create_provider
-from focus_group.models.config import OllamaModelConfig, SessionConfig
+from focus_group.models.config import SessionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +26,6 @@ _CLEANUP_EVERY_N_ITERATIONS = 10
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _build_ollama_config(settings: Settings) -> OllamaModelConfig:
-    return OllamaModelConfig(
-        model_name=settings.OLLAMA_MODEL,
-        base_url=settings.ollama_base_url,
-    )
 
 
 def _extract_consensus_level(result_dict: dict) -> str | None:
@@ -75,7 +67,7 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
                 await update_job(db, job_id, status="running", started_at=_utcnow())
 
                 config = SessionConfig.model_validate_json(job["config_json"])
-                provider = create_provider(_build_ollama_config(settings))
+                provider = build_llm_provider(settings)
                 session = FocusGroupSession(provider=provider, config=config)
 
                 result = await session.run()

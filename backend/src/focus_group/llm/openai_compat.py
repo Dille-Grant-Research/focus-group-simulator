@@ -8,6 +8,7 @@ DeepSeek, OpenRouter, Together AI, Groq, and OpenAI itself.
 import asyncio
 import logging
 import os
+import re
 
 import httpx
 
@@ -16,6 +17,19 @@ from focus_group.models.config import CloudModelConfig
 from focus_group.utils.tokens import count_tokens as estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+# Availability probes hit the lightweight model list, not a generation.
+_AVAILABILITY_TIMEOUT_SECONDS = 10.0
+_AUTH_FAILURE_STATUSES = (401, 403)
+
+# Reasoning models (e.g. Qwen3) may emit their chain of thought inline as
+# <think>...</think>. An unclosed block means the response was truncated mid-thought.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL)
+
+
+def strip_reasoning(content: str) -> str:
+    """Remove inline <think> reasoning blocks from model output."""
+    return _THINK_BLOCK_RE.sub("", content).strip()
 
 
 class OpenAIConnectionError(Exception):
@@ -65,20 +79,21 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             max_retries: Maximum number of retry attempts for transient failures.
             retry_delay: Initial delay between retries (uses exponential backoff).
 
-        Raises:
-            OpenAIConnectionError: If the API key environment variable is not set.
+        If ``config.api_key_env_var`` is None the endpoint is treated as
+        unauthenticated and no Authorization header is sent.
         """
         self._config = config
         self._max_retries = max_retries
         self._retry_delay = retry_delay
 
-        # Read API key from environment
-        self._api_key = os.environ.get(config.api_key_env_var, "")
-        if not self._api_key:
-            logger.warning(
-                f"API key environment variable '{config.api_key_env_var}' is not set. "
-                f"Requests will fail with authentication errors."
-            )
+        self._api_key = ""
+        if config.api_key_env_var is not None:
+            self._api_key = os.environ.get(config.api_key_env_var, "")
+            if not self._api_key:
+                logger.warning(
+                    f"API key environment variable '{config.api_key_env_var}' is not set. "
+                    f"Requests will fail with authentication errors."
+                )
 
     @property
     def config(self) -> CloudModelConfig:
@@ -108,41 +123,55 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         """
         return estimate_tokens(text)
 
-    async def is_available(self) -> bool:
-        """Check if the cloud API is reachable and authentication is valid.
+    def _headers(self) -> dict[str, str]:
+        """Build request headers, adding Bearer auth only when a key is configured."""
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
-        Sends a minimal request to verify connectivity and auth.
+    async def is_available(self) -> bool:
+        """Check that the API is reachable, authorized, and serves the configured model.
+
+        Uses GET /v1/models rather than a generation request so the probe is
+        cheap even on large models.
 
         Returns:
-            True if the API is accessible and authenticated, False otherwise
+            True if the model is listed by the API, False otherwise
         """
-        if not self._api_key:
+        if self._config.api_key_env_var is not None and not self._api_key:
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self._config.base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self._config.model_name,
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "max_tokens": 1,
-                    },
+            async with httpx.AsyncClient(timeout=_AVAILABILITY_TIMEOUT_SECONDS) as client:
+                response = await client.get(
+                    f"{self._config.base_url}/v1/models",
+                    headers=self._headers(),
                 )
-                # 200 = success, means API is reachable and auth is valid
-                # 401/403 = auth failure
-                # Other codes still mean the API is reachable
-                if response.status_code in (401, 403):
-                    logger.debug(f"API authentication failed: {response.status_code}")
-                    return False
-                return True
         except (httpx.RequestError, httpx.TimeoutException) as e:
             logger.debug(f"API availability check failed: {e}")
             return False
+
+        if response.status_code in _AUTH_FAILURE_STATUSES:
+            logger.debug(f"API authentication failed: {response.status_code}")
+            return False
+        if response.status_code != 200:
+            logger.debug(f"Model list returned HTTP {response.status_code}")
+            return False
+
+        try:
+            model_ids = {m.get("id") for m in response.json().get("data", [])}
+        except (ValueError, AttributeError):
+            logger.debug("Model list response was not valid JSON")
+            return False
+
+        if self._config.model_name not in model_ids:
+            logger.warning(
+                f"Model '{self._config.model_name}' not served at {self._config.base_url}. "
+                f"Available: {sorted(i for i in model_ids if i)}"
+            )
+            return False
+        return True
 
     async def generate(
         self,
@@ -220,17 +249,14 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=self._config.request_timeout_seconds) as client:
                 response = await client.post(
                     f"{self._config.base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=self._headers(),
                     json=payload,
                 )
 
-                if response.status_code in (401, 403):
+                if response.status_code in _AUTH_FAILURE_STATUSES:
                     raise OpenAIConnectionError(
                         f"Authentication failed (HTTP {response.status_code}). "
                         f"Check your API key in environment variable '{self._config.api_key_env_var}'."
@@ -254,7 +280,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 if not choices:
                     raise OpenAIGenerationError("API returned no choices in response")
 
-                return choices[0].get("message", {}).get("content", "")
+                content = choices[0].get("message", {}).get("content") or ""
+                return strip_reasoning(content)
 
         except httpx.ConnectError as e:
             raise OpenAIConnectionError(
@@ -263,7 +290,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             ) from e
         except httpx.TimeoutException as e:
             raise OpenAIGenerationError(
-                f"API request timed out after 120 seconds. Error: {e}"
+                f"API request timed out after {self._config.request_timeout_seconds} seconds. "
+                f"Error: {e}"
             ) from e
         except httpx.RequestError as e:
             raise OpenAIGenerationError(f"Failed to communicate with API: {e}") from e

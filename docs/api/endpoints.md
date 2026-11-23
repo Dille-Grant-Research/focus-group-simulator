@@ -380,7 +380,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
   "components": {
     "database": "ok",
     "worker": "alive",
-    "ollama": "reachable"
+    "llm": "reachable"
   },
   "timestamp": "2026-05-02T14:00:00Z"
 }
@@ -394,7 +394,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
   "components": {
     "database": "ok",
     "worker": "alive",
-    "ollama": "unreachable"
+    "llm": "unreachable"
   },
   "timestamp": "2026-05-02T14:00:00Z"
 }
@@ -404,7 +404,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
 |-----------|--------|---------------|
 | `database` | `"ok"` / `"error"` | SQLite responds to `SELECT 1` |
 | `worker` | `"alive"` / `"dead"` | Background job worker task is running |
-| `ollama` | `"reachable"` / `"unreachable"` / `"error"` | `GET http://<OLLAMA_HOST>:<OLLAMA_PORT>/api/tags` returns 200 |
+| `llm` | `"reachable"` / `"unreachable"` / `"error"` | Inference service is up and serves `LLM_MODEL`. `LLM_PROVIDER=openai`: `GET <LLM_BASE_URL>/v1/models` lists the model. `LLM_PROVIDER=ollama`: `GET <LLM_BASE_URL>/api/tags` returns 200 |
 
 Returns `503` if **any** component is not in its healthy state. Returns `200` only when all three are healthy.
 

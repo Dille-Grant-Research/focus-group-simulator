@@ -15,9 +15,9 @@ from typing import AsyncIterator, Generator
 # Bootstrap env vars BEFORE importing api.* (which triggers app = create_app())
 # ---------------------------------------------------------------------------
 _IMPORT_DEFAULTS = {
-    "OLLAMA_HOST": "localhost",
-    "OLLAMA_PORT": "11434",
-    "OLLAMA_MODEL": "test-model",
+    "LLM_PROVIDER": "ollama",
+    "LLM_BASE_URL": "http://localhost:11434",
+    "LLM_MODEL": "test-model",
     "ENTRA_TENANT_ID": "test-tenant-id", # We won't actully hard code this and cuase an error is not set
     "ENTRA_CLIENT_ID": "test-client-id", # We won't actully hard code this and cuase an error is not set
     "ENTRA_CLIENT_SECRET": "test-client-secret-placeholder",
@@ -53,9 +53,9 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
     """
     db_path = str(tmp_path / "test.db")
     test_envs = {
-        "OLLAMA_HOST": "localhost",
-        "OLLAMA_PORT": "11434",
-        "OLLAMA_MODEL": "test-model",
+        "LLM_PROVIDER": "ollama",
+        "LLM_BASE_URL": "http://localhost:11434",
+        "LLM_MODEL": "test-model",
         "ENTRA_TENANT_ID": "test-tenant-id",
         "ENTRA_CLIENT_ID": "test-client-id",
         "ENTRA_CLIENT_SECRET": "test-client-secret",
