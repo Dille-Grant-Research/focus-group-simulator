@@ -3,11 +3,22 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Concurrent chat completions per provider. LM Studio on cruncher shares one
 # context pool across all in-flight requests, so this is kept small by default.
 DEFAULT_MAX_PARALLEL_REQUESTS = 4
+
+class GroupDynamic(str, Enum):
+    """Preset that sets how the session's participants tend to engage.
+
+    Each preset maps to stance weights in focus_group.persona.stance_distribution.
+    """
+
+    NATURAL = "natural"
+    COOPERATIVE = "cooperative"
+    HEATED = "heated"
+
 
 class LLMProviderType(str, Enum):
     """Supported LLM provider types."""
@@ -252,6 +263,15 @@ class SessionConfig(BaseModel):
         description="Model configuration for the LLM provider",
     )
 
+    @field_validator("participant_names")
+    @classmethod
+    def _names_unique(cls, names: list[str | None] | None) -> list[str | None] | None:
+        """Reject repeated names: the session tracks speakers by name."""
+        given = [n.strip().casefold() for n in names or [] if n and n.strip()]
+        if len(given) != len(set(given)):
+            raise ValueError("participant_names must be unique (ignoring case and spaces)")
+        return names
+
     @model_validator(mode="before")
     @classmethod
     def _route_model_config(cls, data: Any) -> Any:
@@ -277,6 +297,14 @@ class SessionConfig(BaseModel):
     validate_personas: bool = Field(
         default=True,
         description="Whether to validate generated personas",
+    )
+    group_dynamic: GroupDynamic = Field(
+        default=GroupDynamic.NATURAL,
+        description=(
+            "How participants tend to engage: 'natural' (a realistic mix), 'cooperative' "
+            "or 'heated'. Each participant's discussion stance is drawn from this preset's "
+            "distribution, seeded by the job seed."
+        ),
     )
     exclude_nonverbals: bool = Field(
         default=True,

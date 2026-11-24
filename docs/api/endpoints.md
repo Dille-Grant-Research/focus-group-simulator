@@ -251,6 +251,7 @@ Cookie: session=<value>
         "completion_tokens": 7408,
         "max_prompt_tokens": 3120
       },
+      "group_dynamic": "natural",
       "duration_seconds": 372.4
     }
   }
@@ -258,7 +259,8 @@ Cookie: session=<value>
 ```
 
 `metadata.run` records what produced the result, so a run can be reported and reproduced:
-the server's provider and model, the sampling settings actually used, token usage reported by
+the server's provider and model, the sampling settings actually used, the `group_dynamic` preset the
+participants' stances were drawn from (see configuration.md), token usage reported by
 the inference server (`usage` is null if the provider doesn't report it), and wall-clock time.
 Submit the same config with `"model": {"seed": <params.seed>}` to reproduce a run. `run` is null
 for jobs that finished before this field existed.

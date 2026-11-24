@@ -25,6 +25,7 @@ from focus_group.models.config import SessionConfig
 from focus_group.models.memory import FocusGroupMemory
 from focus_group.models.persona import Persona
 from focus_group.persona.generator import PersonaGenerationError, PersonaGenerator
+from focus_group.persona.stance_distribution import draw_stances
 from focus_group.persona.validator import PersonaValidator, ValidationResult
 
 
@@ -150,15 +151,19 @@ class FocusGroupSession:
         self,
         provider: BaseLLMProvider,
         config: SessionConfig,
+        seed: int | None = None,
     ) -> None:
         """Initialize the focus group session.
 
         Args:
             provider: The LLM provider for all operations
             config: Session configuration including demographics, questions, etc.
+            seed: Seed for the participants' stance draw (normally the job's sampling
+                seed), so the same seed gives the same group. None draws unseeded.
         """
         self._provider = provider
         self._config = config
+        self._seed = seed
 
         # Component instances (created lazily)
         self._persona_generator: PersonaGenerator | None = None
@@ -339,6 +344,9 @@ class FocusGroupSession:
                 demographics=self._config.demographics,
                 ensure_unique_names=True,
                 name_overrides=self._config.participant_names,
+                stances=draw_stances(
+                    len(self._config.demographics), self._config.group_dynamic, self._seed
+                ),
             )
         except PersonaGenerationError as e:
             error_msg = f"Failed to generate personas: {e}"

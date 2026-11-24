@@ -18,7 +18,7 @@ from api.config import SamplingParams, Settings, build_llm_provider, resolve_sam
 from api.database import delete_expired_jobs, get_db, get_next_queued_job, update_job
 from focus_group.core.session import FocusGroupSession
 from focus_group.llm.base import BaseLLMProvider
-from focus_group.models.config import SessionConfig
+from focus_group.models.config import GroupDynamic, SessionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,9 @@ def _run_metadata(
     sampling: SamplingParams,
     provider: BaseLLMProvider | None,
     started: float,
+    group_dynamic: GroupDynamic,
 ) -> str:
-    """Record what ran: provider, model, sampling params, token usage, duration."""
+    """Record what ran: provider, model, sampling params, group dynamic, usage, duration."""
     usage = provider.usage_totals if provider is not None else None
     return json.dumps(
         {
@@ -75,6 +76,7 @@ def _run_metadata(
                 "seed": sampling.seed,
                 "reasoning_effort": settings.LLM_REASONING_EFFORT,
             },
+            "group_dynamic": group_dynamic.value,
             "usage": (
                 {
                     "calls": usage.calls,
@@ -119,7 +121,7 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
                 config = SessionConfig.model_validate_json(job["config_json"])
                 sampling = resolve_sampling(settings, config.model)
                 provider = build_llm_provider(settings, sampling)
-                session = FocusGroupSession(provider=provider, config=config)
+                session = FocusGroupSession(provider=provider, config=config, seed=sampling.seed)
 
                 try:
                     result = await asyncio.wait_for(
@@ -155,7 +157,7 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
                     participant_count=len(result.participants),
                     total_turns=result.total_responses,
                     consensus_level=_extract_consensus_level(result_dict),
-                    run_metadata_json=_run_metadata(settings, sampling, provider, started),
+                    run_metadata_json=_run_metadata(settings, sampling, provider, started, config.group_dynamic),
                 )
                 logger.info(
                     "Job %s completed (%d participants, %d turns)",
@@ -174,7 +176,7 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
                     error_message=str(exc),
                     result_json=exc.result_json if isinstance(exc, JobFailedError) else None,
                     run_metadata_json=(
-                        _run_metadata(settings, sampling, provider, started)
+                        _run_metadata(settings, sampling, provider, started, config.group_dynamic)
                         if sampling is not None
                         else None
                     ),

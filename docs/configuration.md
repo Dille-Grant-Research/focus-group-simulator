@@ -224,6 +224,27 @@ When `true`, generated personas are validated against their demographic spec bef
 
 ---
 
+### `group_dynamic`
+
+**Type:** string, one of `"natural"`, `"cooperative"`, `"heated"`  
+**Required:** No  
+**Default:** `"natural"`
+
+How participants tend to engage with each other. Each participant's *discussion stance* (how they argue, not what they think about the topic) is drawn from this preset's distribution:
+
+| Preset | agreeable | balanced | challenging | contrarian | Limits (groups of 3+) |
+|---|---|---|---|---|---|
+| `natural` | 25% | 40% | 25% | 10% | at least 1 challenger; at most 40% challenging or contrarian |
+| `cooperative` | 40% | 45% | 15% | 0% | at least 1 challenger; at most 25% |
+| `heated` | 10% | 30% | 40% | 20% | at least 1 challenger and 1 non-challenger; at most 60% |
+
+- The draw is seeded by the job's seed (`metadata.run.params.seed`), so resubmitting with the same `"model": {"seed": ...}` gives the same mix. The preset used is recorded in `metadata.run.group_dynamic`.
+- Groups of 1–2 people get a plain draw with no limits.
+- What participants *think* about the topic comes from their demographic (e.g. "skeptical perspective"). A skeptic can still be polite, and a supporter can be combative.
+- The weights are a starting point. The research team owns them: they live in `backend/src/focus_group/persona/stance_distribution.py`.
+
+---
+
 ## Fully-Specified Example
 
 ```json
@@ -250,7 +271,8 @@ When `true`, generated personas are validated against their demographic spec bef
     "enable_stance_tracking": true,
     "working_memory_window": 12
   },
-  "validate_personas": true
+  "validate_personas": true,
+  "group_dynamic": "natural"
 }
 ```
 
@@ -270,3 +292,4 @@ When `true`, generated personas are validated against their demographic spec bef
 | `memory` | No | object / null | null | Enables stance tracking |
 | `output` | No | object | *(see above)* | Server-side only |
 | `validate_personas` | No | boolean | true | — |
+| `group_dynamic` | No | string | `"natural"` | `natural`, `cooperative` or `heated` |

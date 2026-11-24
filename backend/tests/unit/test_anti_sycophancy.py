@@ -1,13 +1,15 @@
 """Unit tests for anti-sycophancy, stance diversity, communication register, and N10 detection."""
 
+import json
+
 import pytest
 
 from focus_group.core.participant import Participant
 from focus_group.core.response_generator import ResponseGenerator
 from focus_group.core.speaker_selection import NextSpeakerSelector
-from focus_group.models.persona import Persona
+from focus_group.models.persona import DiscussionStance, Persona
 from focus_group.persona.generator import PERSONA_GENERATION_SYSTEM_PROMPT, PersonaGenerator
-from tests.mocks.mock_provider import MockLLMProvider
+from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
 
 
 def _make_persona(**overrides) -> Persona:
@@ -107,45 +109,68 @@ class TestPersonaStanceFields:
 # --- Persona generator stance diversity tests ---
 
 
-class TestStanceDiversity:
-    """Tests for _ensure_stance_diversity."""
+def _persona_json(name: str, stance: str = "challenging") -> str:
+    """A persona reply as the LLM would send it."""
+    return json.dumps(
+        {
+            "name": name,
+            "age": 40,
+            "background": "Bus driver for twelve years who knows every route in town",
+            "personality_traits": ["patient", "stubborn"],
+            "communication_style": "Plain and direct",
+            "pronouns": "she/her",
+            "discussion_stance": stance,
+            "communication_register": "folksy",
+        }
+    )
 
-    def test_diversity_enforced_for_3_personas(self):
-        gen = PersonaGenerator(MockLLMProvider())
-        personas = [_make_persona(name=f"P{i}", discussion_stance="agreeable") for i in range(3)]
-        result = gen._ensure_stance_diversity(personas)
-        challengers = [p for p in result if p.discussion_stance in ("challenging", "contrarian")]
-        assert len(challengers) >= 1
 
-    def test_diversity_enforced_for_5_personas(self):
-        gen = PersonaGenerator(MockLLMProvider())
-        personas = [_make_persona(name=f"P{i}", discussion_stance="balanced") for i in range(5)]
-        result = gen._ensure_stance_diversity(personas)
-        challengers = [p for p in result if p.discussion_stance in ("challenging", "contrarian")]
-        assert len(challengers) >= 2
+class TestAssignedStance:
+    """The drawn stance is given to the model and always wins over its reply."""
 
-    def test_no_change_if_already_diverse(self):
-        gen = PersonaGenerator(MockLLMProvider())
-        personas = [
-            _make_persona(name="P0", discussion_stance="agreeable"),
-            _make_persona(name="P1", discussion_stance="challenging"),
-            _make_persona(name="P2", discussion_stance="contrarian"),
-        ]
-        result = gen._ensure_stance_diversity(personas)
-        # Should remain unchanged
-        assert result[0].discussion_stance == "agreeable"
-        assert result[1].discussion_stance == "challenging"
-        assert result[2].discussion_stance == "contrarian"
+    @pytest.mark.asyncio
+    async def test_assigned_stance_wins(self) -> None:
+        provider = SequentialMockProvider(responses=[_persona_json("Ana Ruiz", "challenging")])
+        persona = await PersonaGenerator(provider).generate_persona(
+            "Female, 40, bus driver", stance=DiscussionStance.AGREEABLE
+        )
+        assert persona.discussion_stance == "agreeable"
 
-    def test_small_group_not_modified(self):
-        gen = PersonaGenerator(MockLLMProvider())
-        personas = [
-            _make_persona(name="P0", discussion_stance="agreeable"),
-            _make_persona(name="P1", discussion_stance="agreeable"),
-        ]
-        result = gen._ensure_stance_diversity(personas)
-        # Groups < 3 should not be modified
-        assert all(p.discussion_stance == "agreeable" for p in result)
+    @pytest.mark.asyncio
+    async def test_prompt_names_assigned_stance(self) -> None:
+        provider = SequentialMockProvider(responses=[_persona_json("Ana Ruiz")])
+        await PersonaGenerator(provider).generate_persona(
+            "Female, 40, bus driver", stance=DiscussionStance.AGREEABLE
+        )
+        assert '"agreeable"' in provider._calls[-1]["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_reroll_keeps_stance(self) -> None:
+        provider = SequentialMockProvider(
+            responses=[
+                _persona_json("Ana Ruiz"),
+                _persona_json("Ana Ruiz"),  # duplicate name -> re-rolled
+                _persona_json("Bo Lindqvist"),
+            ]
+        )
+        personas = await PersonaGenerator(provider).generate_personas(
+            ["Female, 40", "Male, 50"],
+            stances=[DiscussionStance.BALANCED, DiscussionStance.CONTRARIAN],
+        )
+        assert [p.discussion_stance for p in personas] == ["balanced", "contrarian"]
+        assert len({p.name for p in personas}) == 2
+
+    @pytest.mark.asyncio
+    async def test_stances_length_mismatch_raises(self) -> None:
+        with pytest.raises(ValueError):
+            await PersonaGenerator(MockLLMProvider()).generate_personas(
+                ["Female, 40", "Male, 50"], stances=[DiscussionStance.BALANCED]
+            )
+
+    def test_system_prompt_has_no_conflict_push(self) -> None:
+        assert "NOT everyone should be agreeable" not in PERSONA_GENERATION_SYSTEM_PROMPT
+        assert "flaws as well as strengths" in PERSONA_GENERATION_SYSTEM_PROMPT
+        assert "opinion on the topic" in PERSONA_GENERATION_SYSTEM_PROMPT
 
 
 # --- Response generator anti-sycophancy tests ---
@@ -382,3 +407,45 @@ class TestBodyLanguageRestraint:
         )
         assert "statistics" in prompt
         assert "personal experience" in prompt
+
+
+class _SeededNameProvider(MockLLMProvider):
+    """Behaves like a seeded model: the same prompt always gets the same persona.
+
+    Returns the first name in `names` that the prompt does not list as taken.
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self._names = names
+
+    async def generate(self, prompt: str, system_prompt=None, json_schema=None) -> str:  # type: ignore[override]
+        self._calls.append({"prompt": prompt, "system_prompt": system_prompt})
+        taken_section = prompt.split("already taken", 1)[1] if "already taken" in prompt else ""
+        name = next((n for n in self._names if n not in taken_section), self._names[0])
+        return _persona_json(name)
+
+
+class TestUniqueNamesUnderFixedSeed:
+    """Re-rolling a duplicate name must work when the model is deterministic."""
+
+    @pytest.mark.asyncio
+    async def test_reroll_prompt_lists_taken_names(self) -> None:
+        provider = _SeededNameProvider(["Elias Thorne", "Bo Lindqvist"])
+        personas = await PersonaGenerator(provider).generate_personas(
+            ["Male, 22, grad student", "Male, 18, high school senior"],
+            stances=[DiscussionStance.BALANCED, DiscussionStance.CHALLENGING],
+        )
+        assert [p.name for p in personas] == ["Elias Thorne", "Bo Lindqvist"]
+        assert [p.discussion_stance for p in personas] == ["balanced", "challenging"]
+
+    @pytest.mark.asyncio
+    async def test_names_unique_even_if_rerolls_keep_colliding(self) -> None:
+        provider = _SeededNameProvider(["Elias Thorne"])  # model can only produce one name
+        personas = await PersonaGenerator(provider).generate_personas(
+            ["Male, 22", "Male, 18", "Male, 30"],
+            stances=[DiscussionStance.BALANCED] * 3,
+        )
+        names = [p.name for p in personas]
+        assert len(set(names)) == len(names)
+        assert names[0] == "Elias Thorne"

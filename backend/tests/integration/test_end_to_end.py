@@ -146,6 +146,34 @@ class TestFullSessionFlow:
                 assert response.speaker_name in question_result.speaking_order
 
 
+class TestSeededStances:
+    """The session draws stances from its group_dynamic, seeded by the job seed."""
+
+    _SEED = 7
+    _GROUP = 5
+
+    @pytest.mark.asyncio
+    async def test_same_seed_same_stances(self) -> None:
+        from focus_group.models.config import GroupDynamic
+        from focus_group.persona.stance_distribution import draw_stances
+
+        config = SessionConfig(
+            demographics=[f"Participant {i}, 30-40, professional" for i in range(self._GROUP)],
+            questions=["What do you think about remote work?"],
+            validate_personas=False,
+            group_dynamic=GroupDynamic.HEATED,
+        )
+
+        runs = []
+        for _ in range(2):
+            session = FocusGroupSession(provider=MockLLMProvider(), config=config, seed=self._SEED)
+            result = await session.run()
+            runs.append([p.discussion_stance for p in result.participants])
+
+        expected = [s.value for s in draw_stances(self._GROUP, GroupDynamic.HEATED, self._SEED)]
+        assert runs[0] == runs[1] == expected
+
+
 class TestSessionWithOutputGeneration:
     """Test session execution with output file generation."""
 

@@ -84,6 +84,9 @@ _HANG_SECONDS = 30
 _TERMINAL = {"failed", "completed"}
 
 
+_FAKE_SESSION_SEEDS: list = []
+
+
 class _TrackingProvider(MockLLMProvider):
     closed = False
 
@@ -98,8 +101,8 @@ def _install_fakes(
     provider = _TrackingProvider()
 
     class _FakeSession:
-        def __init__(self, provider, config) -> None:  # noqa: ANN001
-            pass
+        def __init__(self, provider, config, seed=None) -> None:  # noqa: ANN001
+            _FAKE_SESSION_SEEDS.append(seed)
 
         async def run(self) -> SessionResult:
             if hang:
@@ -259,3 +262,48 @@ async def test_unsubmitted_fields_use_server_defaults_via_route(
     assert row["status"] == "completed"
     assert captured[0].temperature == 0.2
     assert captured[0].max_tokens == int(_SERVER_MAX_TOKENS_HIGH)
+
+
+# ---------------------------------------------------------------------------
+# Group dynamic: seed reaches the session, preset is recorded
+# ---------------------------------------------------------------------------
+
+
+async def test_session_receives_job_seed(client: AsyncClient, monkeypatch) -> None:
+    _FAKE_SESSION_SEEDS.clear()
+    captured = _capture_sampling(monkeypatch)
+    await _insert_job("job-seed-to-session", _VALID_CONFIG_JSON)
+
+    await _run_worker_until("job-seed-to-session", _TERMINAL)
+
+    assert _FAKE_SESSION_SEEDS == [captured[0].seed]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        pytest.param({}, "natural", id="default"),
+        pytest.param({"group_dynamic": "heated"}, "heated", id="heated"),
+    ],
+)
+async def test_metadata_records_group_dynamic(
+    client: AsyncClient, monkeypatch, extra: dict, expected: str
+) -> None:
+    from tests.api.helpers import session_headers
+
+    _install_fakes(monkeypatch)
+    body = {"config": {**_MINIMAL_JOB_CONFIG["config"], **extra}}
+    resp = await client.post("/api/v1/jobs", json=body, headers=session_headers(_TEST_USER_A))
+
+    row = await _run_worker_until(resp.json()["job_id"], _TERMINAL)
+
+    assert json.loads(row["run_metadata_json"])["group_dynamic"] == expected
+
+
+async def test_unknown_group_dynamic_rejected(client: AsyncClient) -> None:
+    from tests.api.helpers import session_headers
+
+    body = {"config": {**_MINIMAL_JOB_CONFIG["config"], "group_dynamic": "chaotic"}}
+    resp = await client.post("/api/v1/jobs", json=body, headers=session_headers(_TEST_USER_A))
+
+    assert resp.status_code == 422

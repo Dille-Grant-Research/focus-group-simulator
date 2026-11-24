@@ -3,6 +3,7 @@
 from focus_group.models.config import (
     CloudModelConfig,
     ContextConfig,
+    GroupDynamic,
     LLMProviderType,
     MemoryConfig,
     OllamaModelConfig,
@@ -15,6 +16,7 @@ from focus_group.models.persona import Persona
 __all__ = [
     "CloudModelConfig",
     "ContextConfig",
+    "GroupDynamic",
     "ConversationEvent",
     "LLMProviderType",
     "MemoryConfig",

@@ -32,6 +32,14 @@ const DEFAULT_CLOSING =
   "Do you have any concluding thoughts about participating in this focus group?";
 
 const GENDER_OPTIONS = ["Female", "Male", "Non-binary", "Prefer not to say"] as const;
+
+// How participants tend to engage. Values match the backend's GroupDynamic enum.
+const DEFAULT_GROUP_DYNAMIC = "natural";
+const GROUP_DYNAMIC_OPTIONS = [
+  { value: "natural", label: "Natural (default)" },
+  { value: "cooperative", label: "Cooperative" },
+  { value: "heated", label: "Heated" },
+] as const;
 const LOCATION_OPTIONS = [
   "Twin Cities Metro",
   "Fargo-Moorhead Area",
@@ -77,6 +85,7 @@ interface FormState {
   working_memory_window: string;
   validate_personas: boolean;
   exclude_nonverbals: boolean;
+  group_dynamic: string;
   showAdvanced: boolean;
 }
 
@@ -193,6 +202,7 @@ export default function NewSimulationPage() {
     working_memory_window: "10",
     validate_personas: true,
     exclude_nonverbals: true,
+    group_dynamic: DEFAULT_GROUP_DYNAMIC,
     showAdvanced: false,
   });
 
@@ -404,6 +414,9 @@ export default function NewSimulationPage() {
 
     config.validate_personas = form.validate_personas;
     config.exclude_nonverbals = form.exclude_nonverbals;
+    if (form.group_dynamic !== DEFAULT_GROUP_DYNAMIC) {
+      config.group_dynamic = form.group_dynamic;
+    }
 
     setSubmitting(true);
     try {
@@ -425,7 +438,8 @@ export default function NewSimulationPage() {
     form.num_ctx !== "8192" ||
     form.enable_memory ||
     !form.validate_personas ||
-    !form.exclude_nonverbals;
+    !form.exclude_nonverbals ||
+    form.group_dynamic !== DEFAULT_GROUP_DYNAMIC;
 
   return (
     <div className="max-w-6xl">
@@ -678,6 +692,27 @@ export default function NewSimulationPage() {
                   </Field>
                 </div>
 
+                <Field
+                  label="Group dynamic"
+                  hint="How participants tend to engage. Natural is a realistic mix."
+                >
+                  <Select
+                    value={form.group_dynamic}
+                    onValueChange={(v) => setField("group_dynamic", v)}
+                  >
+                    <SelectTrigger className="w-full sm:w-64">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GROUP_DYNAMIC_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+
                 <div className="flex items-center gap-3">
                   <input
                     id="enable-memory"
@@ -823,6 +858,16 @@ export default function NewSimulationPage() {
                   )}
                   {!form.exclude_nonverbals && (
                     <ReviewKV label="Non-verbal reactions" value="Included" />
+                  )}
+                  {form.group_dynamic !== DEFAULT_GROUP_DYNAMIC && (
+                    <ReviewKV
+                      label="Group dynamic"
+                      value={
+                        GROUP_DYNAMIC_OPTIONS.find(
+                          (o) => o.value === form.group_dynamic
+                        )?.label ?? form.group_dynamic
+                      }
+                    />
                   )}
                 </ReviewSection>
               )}
