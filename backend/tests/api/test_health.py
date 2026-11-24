@@ -116,7 +116,11 @@ async def test_metrics_returns_expected_fields(client: AsyncClient) -> None:
     assert "jobs_failed_24h" in data
     assert "avg_duration_seconds" in data
     assert "worker_status" in data
-    assert "current_job_id" in data
+    assert "current_job_id" not in data
+
+
+async def test_metrics_omits_current_job_id(client: AsyncClient) -> None:
+    assert "current_job_id" not in (await client.get("/metrics")).json()
 
 
 async def test_metrics_queue_depth_reflects_queued_jobs(client: AsyncClient) -> None:
@@ -135,7 +139,6 @@ async def test_metrics_worker_status_idle_when_no_running_job(client: AsyncClien
 
     data = resp.json()
     assert data["worker_status"] == "idle"
-    assert data["current_job_id"] is None
 
 
 async def test_metrics_counts_completed_jobs(client: AsyncClient) -> None:

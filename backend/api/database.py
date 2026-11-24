@@ -22,7 +22,8 @@ _CREATE_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     user_id    TEXT PRIMARY KEY,
     first_seen TEXT NOT NULL,
-    last_seen  TEXT NOT NULL
+    last_seen  TEXT NOT NULL,
+    sessions_valid_after INTEGER
 )
 """
 
@@ -46,16 +47,34 @@ CREATE TABLE IF NOT EXISTS jobs (
 )
 """
 
+# Append-only ledger of accepted submissions, used for the hourly rate limit. It is
+# separate from jobs so deleting or failing a job cannot hand quota back.
+_CREATE_JOB_SUBMISSIONS = """
+CREATE TABLE IF NOT EXISTS job_submissions (
+    user_id      TEXT NOT NULL,
+    submitted_at TEXT NOT NULL
+)
+"""
+
+# Ledger rows older than this are pruned; must exceed any rate-limit window.
+_SUBMISSION_RETENTION_HOURS = 24
+
 # Columns added after the first release. init_db adds any that an existing
 # database file is missing, so deployed volumes upgrade in place.
 _ADDED_JOB_COLUMNS = {
     "run_metadata_json": "TEXT",
 }
 
+_ADDED_USER_COLUMNS = {
+    "sessions_valid_after": "INTEGER",
+}
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_jobs_user        ON jobs(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status_time ON jobs(status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_idempotency ON jobs(idempotency_key)",
+    "CREATE INDEX IF NOT EXISTS idx_submissions_user_time "
+    "ON job_submissions(user_id, submitted_at)",
 ]
 
 
@@ -70,18 +89,47 @@ async def init_db(db_path: str) -> None:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_USERS)
         await db.execute(_CREATE_JOBS)
-        await _add_missing_job_columns(db)
+        submissions_existed = await _table_exists(db, "job_submissions")
+        await db.execute(_CREATE_JOB_SUBMISSIONS)
+        await _add_missing_columns(db, "users", _ADDED_USER_COLUMNS)
+        await _add_missing_columns(db, "jobs", _ADDED_JOB_COLUMNS)
         for stmt in _CREATE_INDEXES:
             await db.execute(stmt)
+        if not submissions_existed:
+            await _backfill_submissions(db)
         await db.commit()
 
 
-async def _add_missing_job_columns(db: aiosqlite.Connection) -> None:
-    cursor = await db.execute("PRAGMA table_info(jobs)")
+async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    )
+    return await cursor.fetchone() is not None
+
+
+async def _backfill_submissions(db: aiosqlite.Connection) -> None:
+    """Seed the ledger from existing jobs so upgrading does not reset anyone's quota.
+
+    Runs only when init_db has just created the table.
+    """
+    await db.execute(
+        """
+        INSERT INTO job_submissions (user_id, submitted_at)
+        SELECT user_id, created_at FROM jobs
+        WHERE julianday(created_at) >= julianday('now', ? || ' hours')
+        """,
+        (f"-{_SUBMISSION_RETENTION_HOURS}",),
+    )
+
+
+async def _add_missing_columns(
+    db: aiosqlite.Connection, table: str, added_columns: dict[str, str]
+) -> None:
+    cursor = await db.execute(f"PRAGMA table_info({table})")
     existing = {row[1] for row in await cursor.fetchall()}
-    for name, column_type in _ADDED_JOB_COLUMNS.items():
+    for name, column_type in added_columns.items():
         if name not in existing:
-            await db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {column_type}")
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
 
 
 async def startup_recovery(db_path: str) -> None:
@@ -137,6 +185,28 @@ async def upsert_user(db: aiosqlite.Connection, user_id: str) -> None:
     await db.commit()
 
 
+async def revoke_user_sessions(db: aiosqlite.Connection, user_id: str, at_epoch: int) -> None:
+    """Reject every session for this user issued at or before at_epoch."""
+    now = _utcnow()
+    await db.execute(
+        """
+        INSERT INTO users (user_id, first_seen, last_seen, sessions_valid_after)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET sessions_valid_after = excluded.sessions_valid_after
+        """,
+        (user_id, now, now, at_epoch),
+    )
+    await db.commit()
+
+
+async def get_sessions_valid_after(db: aiosqlite.Connection, user_id: str) -> int | None:
+    cursor = await db.execute(
+        "SELECT sessions_valid_after FROM users WHERE user_id = ?", (user_id,)
+    )
+    row = await cursor.fetchone()
+    return row[0] if row else None
+
+
 async def create_job(
     db: aiosqlite.Connection,
     *,
@@ -146,16 +216,40 @@ async def create_job(
     idempotency_key: str | None,
     expires_at: str,
 ) -> None:
-    now = _utcnow()
+    """Insert a queued job WITHOUT the rate-limit check or ledger row.
+
+    For tests and internal use only; request handlers use create_job_within_limit.
+    """
+    await _insert_job(
+        db,
+        job_id=job_id,
+        user_id=user_id,
+        config_json=config_json,
+        idempotency_key=idempotency_key,
+        expires_at=expires_at,
+        created_at=_utcnow(),
+    )
+    await db.commit()
+
+
+async def _insert_job(
+    db: aiosqlite.Connection,
+    *,
+    job_id: str,
+    user_id: str,
+    config_json: str,
+    idempotency_key: str | None,
+    expires_at: str,
+    created_at: str,
+) -> None:
     await db.execute(
         """
         INSERT INTO jobs
             (job_id, user_id, status, config_json, idempotency_key, created_at, expires_at)
         VALUES (?, ?, 'queued', ?, ?, ?, ?)
         """,
-        (job_id, user_id, config_json, idempotency_key, now, expires_at),
+        (job_id, user_id, config_json, idempotency_key, created_at, expires_at),
     )
-    await db.commit()
 
 
 async def create_job_within_limit(
@@ -172,20 +266,27 @@ async def create_job_within_limit(
     """Insert a queued job unless the user is at the limit; the count and insert are atomic.
 
     BEGIN IMMEDIATE takes SQLite's write lock before counting, so concurrent submissions
-    are serialized. Returns True when inserted, False (nothing written) at the limit.
+    are serialized. The job and its ledger row are written together. Returns True when
+    inserted, False (nothing written) at the limit.
     """
+    now = _utcnow()
     await db.execute("BEGIN IMMEDIATE")
     try:
         if await count_user_jobs_in_window(db, user_id, hours=window_hours) >= limit:
             await db.rollback()
             return False
+        await _insert_job(
+            db,
+            job_id=job_id,
+            user_id=user_id,
+            config_json=config_json,
+            idempotency_key=idempotency_key,
+            expires_at=expires_at,
+            created_at=now,
+        )
         await db.execute(
-            """
-            INSERT INTO jobs
-                (job_id, user_id, status, config_json, idempotency_key, created_at, expires_at)
-            VALUES (?, ?, 'queued', ?, ?, ?, ?)
-            """,
-            (job_id, user_id, config_json, idempotency_key, _utcnow(), expires_at),
+            "INSERT INTO job_submissions (user_id, submitted_at) VALUES (?, ?)",
+            (user_id, now),
         )
         await db.commit()
     except BaseException:
@@ -206,6 +307,11 @@ async def update_job(db: aiosqlite.Connection, job_id: str, **fields: object) ->
 
 async def delete_expired_jobs(db: aiosqlite.Connection) -> None:
     await db.execute("DELETE FROM jobs WHERE julianday(expires_at) < julianday('now')")
+    await db.execute(
+        "DELETE FROM job_submissions "
+        "WHERE julianday(submitted_at) < julianday('now', ? || ' hours')",
+        (f"-{_SUBMISSION_RETENTION_HOURS}",),
+    )
     await db.commit()
 
 
@@ -267,13 +373,15 @@ async def get_queue_position(db: aiosqlite.Connection, job_id: str) -> int:
 async def count_user_jobs_in_window(
     db: aiosqlite.Connection, user_id: str, hours: int = 1
 ) -> int:
-    """Count non-failed jobs submitted by user in the last N hours (for rate limiting)."""
+    """Count submissions by user in the last N hours (for rate limiting).
+
+    Reads the job_submissions ledger, so deleted and failed jobs still count.
+    """
     cursor = await db.execute(
         """
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) FROM job_submissions
         WHERE user_id = ?
-          AND status != 'failed'
-          AND julianday(created_at) > julianday('now', ? || ' hours')
+          AND julianday(submitted_at) > julianday('now', ? || ' hours')
         """,
         (user_id, f"-{hours}"),
     )

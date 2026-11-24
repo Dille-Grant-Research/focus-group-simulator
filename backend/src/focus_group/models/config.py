@@ -1,13 +1,22 @@
 """Configuration models for the focus group simulator."""
 
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 # Concurrent chat completions per provider. LM Studio on cruncher shares one
 # context pool across all in-flight requests, so this is kept small by default.
 DEFAULT_MAX_PARALLEL_REQUESTS = 4
+
+# Character caps on SessionConfig text fields. These bound what a submitted job
+# can make the server store and feed to the LLM.
+MAX_DEMOGRAPHIC_CHARS = 300
+MAX_PARTICIPANT_NAME_CHARS = 100
+MAX_QUESTION_CHARS = 1000  # applies to questions[] and closing_question
+MAX_PURPOSE_CHARS = 2000
+MAX_SESSION_NAME_CHARS = 200
+
 
 class GroupDynamic(str, Enum):
     """Preset that sets how the session's participants tend to engage.
@@ -235,26 +244,30 @@ class SessionConfig(BaseModel):
     for running a focus group simulation.
     """
 
-    demographics: list[str] = Field(
+    demographics: list[Annotated[str, StringConstraints(max_length=MAX_DEMOGRAPHIC_CHARS)]] = Field(
         description="List of demographic specifications for participants",
         min_length=1,
         max_length=15,
     )
-    participant_names: list[str | None] | None = Field(
+    participant_names: (
+        list[Annotated[str, StringConstraints(max_length=MAX_PARTICIPANT_NAME_CHARS)] | None] | None
+    ) = Field(
         default=None,
         description="Optional name overrides per participant, parallel to demographics. None entries = autogenerate.",
         max_length=15,
     )
-    questions: list[str] = Field(
+    questions: list[Annotated[str, StringConstraints(max_length=MAX_QUESTION_CHARS)]] = Field(
         description="List of focus group questions to discuss (in order)",
         min_length=1,
         max_length=20,
     )
     purpose: str | None = Field(
         default=None,
+        max_length=MAX_PURPOSE_CHARS,
         description="Optional introductory statement/purpose for the focus group",
     )
     closing_question: str = Field(
+        max_length=MAX_QUESTION_CHARS,
         default="Do you have any concluding thoughts about participating in this focus group?",
         description="The closing question to ask at the end",
     )
@@ -313,5 +326,6 @@ class SessionConfig(BaseModel):
     )
     session_name: str | None = Field(
         default=None,
+        max_length=MAX_SESSION_NAME_CHARS,
         description="Optional name for the session (used in output filenames)",
     )

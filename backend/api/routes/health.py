@@ -118,6 +118,5 @@ async def metrics(request: Request) -> JSONResponse:
             "jobs_failed_24h": failed_24h_row[0] if failed_24h_row else 0,
             "avg_duration_seconds": avg_duration_row[0] if avg_duration_row else None,
             "worker_status": worker_status,
-            "current_job_id": current_job_id,
         }
     )

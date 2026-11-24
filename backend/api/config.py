@@ -8,6 +8,7 @@ are missing.
 import secrets
 from dataclasses import dataclass
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,8 +25,12 @@ from focus_group.models.config import (
 DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300
 DEFAULT_LLM_MAX_TOKENS = 2048
 DEFAULT_LLM_NUM_CTX = 8192
+DEFAULT_SESSION_MAX_AGE_HOURS = 12
+SECONDS_PER_HOUR = 3600
 # Server-chosen seeds stay in the signed 32-bit range every backend accepts.
 _SEED_UPPER_BOUND = 2**31 - 1
+# Hosts for which DEV_AUTH_BYPASS may be enabled (matched against the redirect URI host).
+_DEV_BYPASS_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 SUPPORTED_LLM_PROVIDERS = (LLMProviderType.OLLAMA, LLMProviderType.OPENAI)
 
 
@@ -61,6 +66,8 @@ class Settings(BaseSettings):
     # App secrets & origins
     FRONTEND_URL: str
     SESSION_SECRET_KEY: str
+    SESSION_MAX_AGE_HOURS: int = DEFAULT_SESSION_MAX_AGE_HOURS
+    API_DOCS_ENABLED: bool = False  # /docs, /redoc, /openapi.json are anonymous; off by default
     CORS_ORIGINS: str = ""  # comma-separated list, parsed via property below
 
     # Data & job settings
@@ -86,6 +93,10 @@ class Settings(BaseSettings):
         return f"https://login.microsoftonline.com/{self.ENTRA_TENANT_ID}"
 
     @property
+    def session_max_age_seconds(self) -> int:
+        return self.SESSION_MAX_AGE_HOURS * SECONDS_PER_HOUR
+
+    @property
     def cors_origins_list(self) -> list[str]:
         if not self.CORS_ORIGINS:
             return []
@@ -104,6 +115,16 @@ class Settings(BaseSettings):
             raise ValueError("ENTRA_CLIENT_SECRET must not be empty")
         if not self.SESSION_SECRET_KEY:
             raise ValueError("SESSION_SECRET_KEY must not be empty")
+        return self
+
+    @model_validator(mode="after")
+    def _check_dev_bypass_host(self) -> "Settings":
+        host = urlparse(self.ENTRA_REDIRECT_URI).hostname
+        if self.DEV_AUTH_BYPASS and host not in _DEV_BYPASS_HOSTS:
+            raise ValueError(
+                "DEV_AUTH_BYPASS=true is only allowed when ENTRA_REDIRECT_URI points at "
+                "localhost. Set DEV_AUTH_BYPASS=false for this environment."
+            )
         return self
 
 

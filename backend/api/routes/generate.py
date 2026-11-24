@@ -18,6 +18,12 @@ from api.config import Settings, build_llm_provider, get_settings
 from focus_group.llm.base import BaseLLMProvider
 from focus_group.llm.ollama import OllamaConnectionError
 from focus_group.llm.openai_compat import OpenAIConnectionError
+from focus_group.models.config import (
+    MAX_DEMOGRAPHIC_CHARS,
+    MAX_PURPOSE_CHARS,
+    MAX_QUESTION_CHARS,
+    MAX_SESSION_NAME_CHARS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,9 +205,10 @@ async def _generate_params(provider: BaseLLMProvider, body: GenerateRequest) -> 
             },
         )
 
+    # Clip to the SessionConfig caps so the UI can always submit what we return.
     return GenerateResponse(
-        session_name=session_name,
-        purpose=purpose,
-        demographics=demographics,
-        questions=questions,
+        session_name=session_name[:MAX_SESSION_NAME_CHARS],
+        purpose=purpose[:MAX_PURPOSE_CHARS],
+        demographics=[d[:MAX_DEMOGRAPHIC_CHARS] for d in demographics],
+        questions=[q[:MAX_QUESTION_CHARS] for q in questions],
     )

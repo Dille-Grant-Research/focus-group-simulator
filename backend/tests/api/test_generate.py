@@ -9,9 +9,14 @@ from httpx import AsyncClient
 
 from focus_group.llm.ollama import OllamaConnectionError
 from focus_group.llm.openai_compat import OpenAIConnectionError
+from focus_group.models.config import (
+    MAX_DEMOGRAPHIC_CHARS,
+    MAX_PURPOSE_CHARS,
+    MAX_QUESTION_CHARS,
+    MAX_SESSION_NAME_CHARS,
+)
 from tests.api.helpers import _TEST_USER_A, session_headers
 from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -262,3 +267,29 @@ async def test_generate_closes_provider(
 
     assert resp.status_code == expected_status
     assert provider.closed is True
+
+
+async def test_generate_clips_values_to_session_config_caps(
+    client: AsyncClient, monkeypatch
+) -> None:
+    overshoot = 50
+    demographics_json = json.dumps({
+        "session_name": "n" * (MAX_SESSION_NAME_CHARS + overshoot),
+        "purpose": "p" * (MAX_PURPOSE_CHARS + overshoot),
+        "demographics": ["d" * (MAX_DEMOGRAPHIC_CHARS + overshoot)],
+    })
+    questions_json = json.dumps(["q" * (MAX_QUESTION_CHARS + overshoot)])
+    _make_provider(monkeypatch, [demographics_json, questions_json])
+
+    resp = await client.post(
+        "/api/v1/generate",
+        json={"research_topic": _VALID_TOPIC},
+        headers=session_headers(_TEST_USER_A),
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["session_name"]) == MAX_SESSION_NAME_CHARS
+    assert len(data["purpose"]) == MAX_PURPOSE_CHARS
+    assert [len(d) for d in data["demographics"]] == [MAX_DEMOGRAPHIC_CHARS]
+    assert [len(q) for q in data["questions"]] == [MAX_QUESTION_CHARS]

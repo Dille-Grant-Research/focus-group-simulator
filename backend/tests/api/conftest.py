@@ -66,6 +66,8 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
         "MAX_JOBS_PER_HOUR": "3",
         "LOG_LEVEL": "WARNING",
         "DEV_AUTH_BYPASS": "false",
+        "SESSION_MAX_AGE_HOURS": "12",
+        "API_DOCS_ENABLED": "false",
     }
     for k, v in test_envs.items():
         monkeypatch.setenv(k, v)

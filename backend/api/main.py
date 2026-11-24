@@ -24,6 +24,8 @@ from api.worker import job_worker
 
 logger = logging.getLogger(__name__)
 
+_INTERNAL_ERROR_MESSAGE = "An unexpected error occurred."
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -35,6 +37,11 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     settings: Settings = get_settings()
 
     logging.basicConfig(level=settings.LOG_LEVEL.upper())
+
+    if settings.DEV_AUTH_BYPASS:
+        logger.warning(
+            "DEV_AUTH_BYPASS is ON — all requests run as dev-user-local. Never use in production."
+        )
 
     await init_db(settings.DB_PATH)
     await startup_recovery(settings.DB_PATH)
@@ -94,7 +101,13 @@ async def _global_exception_handler(request: Request, exc: Exception) -> JSONRes
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"error": {"code": "INTERNAL_ERROR", "message": str(exc), "details": {}}},
+        content={
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": _INTERNAL_ERROR_MESSAGE,
+                "details": {},
+            }
+        },
     )
 
 
@@ -110,9 +123,10 @@ def create_app() -> FastAPI:
         title="Focus Group Simulator API",
         version="1.0.0",
         lifespan=lifespan,
-        # Disable default 422 detail exposure in production if needed
-        docs_url="/docs",
-        redoc_url="/redoc",
+        # Docs routes are auth-exempt, so they stay off unless explicitly enabled.
+        docs_url="/docs" if settings.API_DOCS_ENABLED else None,
+        redoc_url="/redoc" if settings.API_DOCS_ENABLED else None,
+        openapi_url="/openapi.json" if settings.API_DOCS_ENABLED else None,
     )
 
     # Starlette applies middleware LIFO: last registered = outermost layer.
