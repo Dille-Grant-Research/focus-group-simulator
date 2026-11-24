@@ -34,7 +34,7 @@ These are the fields researchers interact with directly through the submission f
 
 **Type:** array of strings  
 **Required:** Yes  
-**Constraints:** 1 to 15 items
+**Constraints:** 1 to 15 items; each item max 300 characters
 
 A list of participant profiles. Each string is a free-text demographic description that the LLM uses to generate a realistic persona. Write them as you would describe a research participant to a colleague.
 
@@ -53,11 +53,25 @@ A list of participant profiles. Each string is a free-text demographic descripti
 
 ---
 
+### `participant_names`
+
+**Type:** array of strings or `null`, or `null` for the whole field  
+**Required:** No (default `null`)  
+**Constraints:** at most 15 items; each item max 100 characters; names must be unique (ignoring case and surrounding spaces)
+
+Optional name overrides, parallel to `demographics` (item *i* names participant *i*). An entry of `null` means "auto-generate a name for this participant".
+
+```json
+"participant_names": ["Maria", null, "Devon"]
+```
+
+---
+
 ### `questions`
 
 **Type:** array of strings  
 **Required:** Yes  
-**Constraints:** 1 to 20 items
+**Constraints:** 1 to 20 items; each item max 1000 characters
 
 The focus group questions, in the order they will be asked. The simulation works through each question before moving to the next.
 
@@ -75,7 +89,8 @@ The focus group questions, in the order they will be asked. The simulation works
 
 **Type:** string or null  
 **Required:** No  
-**Default:** null
+**Default:** null  
+**Constraints:** Max 2000 characters
 
 An optional introductory context statement shown to all participants at the start of the session. Use this to frame the research topic before the first question.
 
@@ -89,7 +104,8 @@ An optional introductory context statement shown to all participants at the star
 
 **Type:** string  
 **Required:** No  
-**Default:** `"Do you have any concluding thoughts about participating in this focus group?"`
+**Default:** `"Do you have any concluding thoughts about participating in this focus group?"`  
+**Constraints:** Max 1000 characters
 
 The final question asked after all `questions` have been discussed.
 
@@ -104,7 +120,7 @@ The final question asked after all `questions` have been discussed.
 **Type:** string or null  
 **Required:** No  
 **Default:** null  
-**Constraints:** Max 100 characters; alphanumeric, spaces, and hyphens only
+**Constraints:** Max 200 characters
 
 An optional label for the session used in server-side output filenames. Does not affect simulation behavior.
 
@@ -282,11 +298,11 @@ How participants tend to engage with each other. Each participant's *discussion 
 
 | Field | Required | Type | Default | Key Constraint |
 |-------|----------|------|---------|----------------|
-| `demographics` | Yes | string[] | — | 1–15 items |
-| `questions` | Yes | string[] | — | 1–20 items |
-| `purpose` | No | string / null | null | — |
-| `closing_question` | No | string | *(see above)* | — |
-| `session_name` | No | string / null | null | Max 100 chars |
+| `demographics` | Yes | string[] | — | 1–15 items, each max 300 chars |
+| `questions` | Yes | string[] | — | 1–20 items, each max 1000 chars |
+| `purpose` | No | string / null | null | Max 2000 chars |
+| `closing_question` | No | string | *(see above)* | Max 1000 chars |
+| `session_name` | No | string / null | null | Max 200 chars |
 | `model` | No | object | Ollama defaults | temperature 0–2 |
 | `context` | No | object | *(see above)* | — |
 | `memory` | No | object / null | null | Enables stance tracking |

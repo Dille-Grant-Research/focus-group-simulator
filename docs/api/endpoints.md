@@ -19,7 +19,7 @@ All authenticated endpoints require the signed `session` cookie set by the login
 2. [Auth Endpoints](#2-auth-endpoints)
    - [GET /api/v1/auth/login](#get-apiv1authlogin)
    - [GET /api/v1/auth/callback](#get-apiv1authcallback)
-   - [GET /api/v1/auth/logout](#get-apiv1authlogout)
+   - [POST /api/v1/auth/logout](#post-apiv1authlogout)
 3. [System Endpoints](#3-system-endpoints)
    - [GET /health](#get-health)
    - [GET /metrics](#get-metrics)
@@ -36,7 +36,7 @@ Submit a new focus group simulation for processing.
 
 **Idempotency:** Submitting the same configuration within 10 minutes returns the existing `job_id` instead of creating a new job. This prevents duplicate simulations from double-clicks or retries.
 
-**Rate limit:** `MAX_JOBS_PER_HOUR` submissions per user per rolling hour (default: 5). Duplicate submissions (idempotency hits) do not count against the limit.
+**Rate limit:** `MAX_JOBS_PER_HOUR` submissions per user per rolling hour (default: 5). Every accepted submission in the last hour counts, including jobs later deleted or failed. Duplicate submissions (idempotency hits) do not count against the limit.
 
 #### Request
 
@@ -376,17 +376,17 @@ The OAuth callback endpoint. Microsoft Entra redirects here after the user authe
 
 ---
 
-### GET /api/v1/auth/logout
+### POST /api/v1/auth/logout
 
-Logs the user out by clearing the session cookie.
+Logs the user out. Every session issued to that user before this call stops working immediately, on all devices, and the session cookie is cleared in this browser.
 
-**Auth required:** No (but has no effect if the user is not logged in)
+**Auth required:** No (a missing, expired or invalid cookie is not an error; there is simply nothing to revoke)
 
 ```
-GET /api/v1/auth/logout
+POST /api/v1/auth/logout
 ```
 
-**Response:** `302` redirect to `FRONTEND_URL` with the session cookie deleted.
+**Response:** `303` redirect to `FRONTEND_URL` with the session cookie deleted. `GET` is not supported and returns `405`. Call it from a form submit or `fetch` with credentials; the 303 makes the browser follow the redirect with `GET`.
 
 ---
 
@@ -450,8 +450,7 @@ Operational statistics for the job queue. Always returns 200.
   "jobs_completed_24h": 7,
   "jobs_failed_24h": 1,
   "avg_duration_seconds": 287.4,
-  "worker_status": "processing",
-  "current_job_id": "3f8a2b1c-e7d4-4a2f-9b1e-0c5d6f7a8b9e"
+  "worker_status": "processing"
 }
 ```
 
@@ -462,4 +461,5 @@ Operational statistics for the job queue. Always returns 200.
 | `jobs_failed_24h` | integer | Jobs that reached `failed` in the last 24 hours |
 | `avg_duration_seconds` | float or null | Average runtime of completed jobs in the last 24 hours |
 | `worker_status` | string | `"dead"`, `"idle"`, or `"processing"` |
-| `current_job_id` | string or null | Job ID currently being processed; null if idle |
+
+The response intentionally omits job IDs: this endpoint is unauthenticated.

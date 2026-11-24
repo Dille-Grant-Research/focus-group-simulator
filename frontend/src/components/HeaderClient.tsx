@@ -71,12 +71,14 @@ export default function HeaderClient() {
               >
                 Dashboard
               </Link>
-              <a
-                href="/api/v1/auth/logout"
-                className="text-primary-foreground/85 hover:text-primary-foreground transition-colors"
-              >
-                Sign out
-              </a>
+              <form method="post" action="/api/v1/auth/logout">
+                <button
+                  type="submit"
+                  className="cursor-pointer text-primary-foreground/85 hover:text-primary-foreground transition-colors"
+                >
+                  Sign out
+                </button>
+              </form>
             </nav>
           </div>
         </div>

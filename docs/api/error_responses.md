@@ -54,7 +54,7 @@ Every error response has this shape:
 
 ### 401 — UNAUTHENTICATED
 
-**When:** The `session` cookie is missing, expired, or has an invalid signature.
+**When:** The `session` cookie is missing, expired, has an invalid signature, or was signed out (session revoked by logout). A signed-out session returns the message "Session was signed out. Please log in again."
 
 **Response:**
 ```json
@@ -195,7 +195,7 @@ Every error response has this shape:
 
 ### 429 — RATE_LIMIT_EXCEEDED
 
-**When:** The user has submitted `MAX_JOBS_PER_HOUR` or more jobs in the past hour (default: 5). Duplicate submissions that hit the idempotency check do not count toward this limit.
+**When:** The user has submitted `MAX_JOBS_PER_HOUR` or more jobs in the past hour (default: 5). Every accepted submission in the last hour counts, including jobs later deleted or failed. Duplicate submissions that hit the idempotency check do not count toward this limit.
 
 **Response:**
 ```json
@@ -224,7 +224,7 @@ Every error response has this shape:
 {
   "error": {
     "code": "INTERNAL_ERROR",
-    "message": "An unexpected error occurred. Please try again.",
+    "message": "An unexpected error occurred.",
     "details": {}
   }
 }
