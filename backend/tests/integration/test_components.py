@@ -27,7 +27,7 @@ from focus_group.models.message import Message
 from focus_group.models.persona import Persona
 from focus_group.persona.generator import PersonaGenerator
 from focus_group.persona.validator import PersonaValidator
-from tests.mocks.mock_provider import MockLLMProvider
+from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
 
 pytestmark = pytest.mark.integration
 
@@ -219,6 +219,142 @@ class TestNonVerbalGeneratorIntegration:
 
         assert reaction is not None
         assert len(reaction) > 0
+
+
+class _FailFirstCallProvider(MockLLMProvider):
+    """Mock provider whose first generate() call raises, as a dead request would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._failed_once = False
+
+    async def generate(
+        self, prompt: str, system_prompt: str | None = None, json_schema: dict | None = None
+    ) -> str:
+        if not self._failed_once:
+            self._failed_once = True
+            raise RuntimeError("simulated inference failure")
+        return await super().generate(prompt, system_prompt, json_schema)
+
+
+class TestNonVerbalFanOutResilience:
+    """One failed reaction must not take down the other participants' reactions."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stimulus_type", "speaker_name"),
+        [
+            pytest.param("question", None, id="question"),
+            pytest.param("statement", "Moderator Guest", id="statement"),
+        ],
+    )
+    async def test_failed_reaction_becomes_empty(
+        self,
+        sample_personas: list[Persona],
+        stimulus_type: str,
+        speaker_name: str | None,
+    ) -> None:
+        provider = _FailFirstCallProvider()
+        participants = [Participant(persona=p, provider=provider) for p in sample_personas]
+        generator = NonVerbalGenerator(provider)
+
+        reactions = await generator.generate_reactions_parallel(
+            participants=participants,
+            stimulus="What is your opinion on remote work?",
+            stimulus_type=stimulus_type,
+            speaker_name=speaker_name,
+        )
+
+        assert set(reactions) == {p.name for p in participants}
+        empty = [name for name, reaction in reactions.items() if not reaction]
+        assert len(empty) == 1
+        assert all(reactions[p.name] for p in participants if p.name not in empty)
+
+
+_SPEAKER_SELECTION_LOGGER = "focus_group.core.speaker_selection"
+_QUESTION = "What do you think about remote work?"
+
+# JSON the model can legally emit but the old parser crashed on (null / non-string).
+_BAD_SELECTION_PAYLOADS = [
+    pytest.param({"selected": None, "reasoning": None}, id="nulls"),
+    pytest.param({"selected": 5, "reasoning": "x"}, id="non-string-selected"),
+    pytest.param({"selected": "Nobody Known", "reasoning": None}, id="unknown-name-null-reasoning"),
+    pytest.param(
+        {"someone_wants_to_speak": True, "selected": 5, "reasoning": None}, id="next-shape-bad"
+    ),
+]
+
+
+async def _run_selector(kind: str, provider: MockLLMProvider, participants: list[Participant]):
+    reactions = {p.name: "leans forward, wants to speak" for p in participants}
+    if kind == "first":
+        return await FirstSpeakerSelector(provider).select_first_speaker(
+            participants=participants, question=_QUESTION, reactions=reactions
+        )
+    if kind == "next":
+        return await NextSpeakerSelector(provider).select_next_speaker(
+            participants=participants,
+            current_speaker=participants[0],
+            statement="I like it.",
+            reactions=reactions,
+        )
+    return await SilenceHandler(provider).select_reluctant_speaker(
+        participants=participants, question=_QUESTION, reactions=reactions, already_spoken=set()
+    )
+
+
+class TestSpeakerSelectionParsing:
+    """Malformed-but-valid JSON falls back (and logs) instead of crashing."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["first", "next", "reluctant"])
+    @pytest.mark.parametrize("payload", _BAD_SELECTION_PAYLOADS)
+    async def test_bad_payload_falls_back_and_logs(
+        self,
+        sample_personas: list[Persona],
+        caplog: pytest.LogCaptureFixture,
+        kind: str,
+        payload: dict,
+    ) -> None:
+        provider = SequentialMockProvider(responses=[json.dumps(payload)], loop=True)
+        participants = [Participant(persona=p, provider=provider) for p in sample_personas]
+
+        with caplog.at_level("WARNING", logger=_SPEAKER_SELECTION_LOGGER):
+            result = await _run_selector(kind, provider, participants)
+
+        if result is not None:
+            assert result.participant in participants
+        assert any(r.name == _SPEAKER_SELECTION_LOGGER for r in caplog.records)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "excluded"),
+        [
+            pytest.param("first", set(), id="first"),
+            pytest.param("next", {0}, id="next-excludes-current-speaker"),
+            pytest.param("reluctant", set(), id="reluctant"),
+        ],
+    )
+    async def test_requests_schema_limited_to_eligible_names(
+        self, sample_personas: list[Persona], kind: str, excluded: set[int]
+    ) -> None:
+        participants = [Participant(persona=p, provider=None) for p in sample_personas]
+        name = participants[1].name
+        provider = SequentialMockProvider(
+            responses=[
+                json.dumps({"someone_wants_to_speak": True, "selected": name, "reasoning": "r"})
+            ],
+            loop=True,
+        )
+
+        result = await _run_selector(kind, provider, participants)
+
+        assert result is not None and result.participant.name == name
+        schema = provider._calls[-1]["json_schema"]
+        assert schema["type"] == "object"
+        allowed = {n for n in schema["properties"]["selected"]["enum"] if n is not None}
+        expected = {p.name for i, p in enumerate(participants) if i not in excluded}
+        assert allowed == expected
 
 
 class TestSpeakerSelectionIntegration:
@@ -561,18 +697,16 @@ class TestContextSummarizerIntegration:
 
         summarizer = ContextSummarizer(mock_provider)
 
-        # Check if summarization is needed
-        if summarizer.needs_summarization(storage, max_tokens=500):
-            new_storage = await summarizer.summarize_context(
-                storage=storage,
-                max_tokens=500,
-            )
+        # ~272 tokens of context; a 300-token budget triggers at 80% (240 tokens)
+        budget = 300
+        assert await summarizer.needs_summarization(storage, max_tokens=budget)
 
-            # Get the verbal context
-            context = new_storage.format_for_llm(include_nonverbals=False)
+        new_storage = await summarizer.summarize_context(storage=storage, max_tokens=budget)
+        context = new_storage.format_for_llm(include_nonverbals=False)
 
-            # Persona should still be there
-            assert "persona" in context.lower() or "preserved" in context.lower()
+        # Persona and the most recent message survive summarization
+        assert "persona that must be preserved" in context.lower()
+        assert "most recent message" in context.lower()
 
 
 class TestNonVerbalReactionHistory:

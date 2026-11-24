@@ -6,9 +6,13 @@ in response to questions and statements.
 """
 
 import asyncio
+import logging
 
 from focus_group.core.participant import Participant
 from focus_group.llm.base import BaseLLMProvider
+
+
+logger = logging.getLogger(__name__)
 
 
 class NonVerbalGenerator:
@@ -171,13 +175,25 @@ class NonVerbalGenerator:
                 self.generate_reaction_to_statement(p, speaker_name, stimulus) for p in participants
             ]
 
-        # Execute all tasks in parallel
-        reactions = await asyncio.gather(*tasks)
+        # Execute all tasks in parallel. A failed reaction becomes "" (callers skip
+        # empty reactions) so one dead request doesn't wipe out the whole question.
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Build result dictionary
-        return {
-            participant.name: reaction for participant, reaction in zip(participants, reactions)
-        }
+        reactions: dict[str, str] = {}
+        for participant, outcome in zip(participants, outcomes):
+            if isinstance(outcome, BaseException):
+                if not isinstance(outcome, Exception):
+                    raise outcome  # cancellation and other control flow must propagate
+                logger.warning(
+                    "Non-verbal reaction failed for %s (%s): %s",
+                    participant.name,
+                    stimulus_type,
+                    outcome,
+                )
+                reactions[participant.name] = ""
+            else:
+                reactions[participant.name] = outcome
+        return reactions
 
     async def generate_reactions_to_question_parallel(
         self,

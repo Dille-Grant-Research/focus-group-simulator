@@ -32,6 +32,16 @@ def session_cookies(user_id: str) -> dict[str, str]:
     return {"session": make_session_cookie(user_id)}
 
 
+def cookie_header(cookies: dict[str, str]) -> dict[str, str]:
+    """Send cookies as a Cookie header. httpx deprecates per-request cookies=."""
+    return {"Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())}
+
+
+def session_headers(user_id: str) -> dict[str, str]:
+    """Return headers carrying a valid session cookie for the given user."""
+    return cookie_header(session_cookies(user_id))
+
+
 def make_flow_cookie(flow: dict) -> str:
     """Return a signed oauth_flow cookie value from an MSAL flow dict."""
     from itsdangerous import URLSafeTimedSerializer

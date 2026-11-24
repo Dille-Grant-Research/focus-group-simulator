@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import AsyncClient
 
-from tests.api.helpers import _TEST_USER_A, make_flow_cookie, make_session_cookie
+from tests.api.helpers import _TEST_USER_A, cookie_header, make_flow_cookie, make_session_cookie
 
 # ---------------------------------------------------------------------------
 # MSAL mock data
@@ -78,7 +78,7 @@ async def test_callback_success_sets_session_cookie(
     resp = await client.get(
         "/api/v1/auth/callback",
         params={"code": "test-auth-code", "state": "abc"},
-        cookies={"oauth_flow": flow_cookie},
+        headers=cookie_header({"oauth_flow": flow_cookie}),
         follow_redirects=False,
     )
 
@@ -114,7 +114,7 @@ async def test_callback_msal_error_redirects_with_error(
     resp = await client.get(
         "/api/v1/auth/callback",
         params={"code": "bad-code", "state": "abc"},
-        cookies={"oauth_flow": flow_cookie},
+        headers=cookie_header({"oauth_flow": flow_cookie}),
         follow_redirects=False,
     )
 
@@ -128,7 +128,7 @@ async def test_callback_tampered_flow_cookie_redirects_with_error(
     resp = await client.get(
         "/api/v1/auth/callback",
         params={"code": "test-code", "state": "abc"},
-        cookies={"oauth_flow": "this.is.not.a.valid.signed.cookie"},
+        headers=cookie_header({"oauth_flow": "this.is.not.a.valid.signed.cookie"}),
         follow_redirects=False,
     )
 
@@ -144,7 +144,7 @@ async def test_callback_tampered_flow_cookie_redirects_with_error(
 async def test_logout_redirects_to_frontend(client: AsyncClient) -> None:
     resp = await client.get(
         "/api/v1/auth/logout",
-        cookies={"session": make_session_cookie(_TEST_USER_A)},
+        headers=cookie_header({"session": make_session_cookie(_TEST_USER_A)}),
         follow_redirects=False,
     )
 
@@ -167,7 +167,7 @@ async def test_protected_route_no_session_returns_401(client: AsyncClient) -> No
 async def test_protected_route_tampered_session_returns_401(client: AsyncClient) -> None:
     resp = await client.get(
         "/api/v1/jobs",
-        cookies={"session": "this.is.definitely.not.valid"},
+        headers=cookie_header({"session": "this.is.definitely.not.valid"}),
     )
 
     assert resp.status_code == 401

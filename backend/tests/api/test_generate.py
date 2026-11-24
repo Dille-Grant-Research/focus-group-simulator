@@ -9,7 +9,7 @@ from httpx import AsyncClient
 
 from focus_group.llm.ollama import OllamaConnectionError
 from focus_group.llm.openai_compat import OpenAIConnectionError
-from tests.api.helpers import _TEST_USER_A, session_cookies
+from tests.api.helpers import _TEST_USER_A, session_headers
 from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
 
 
@@ -65,7 +65,7 @@ async def test_generate_success(client: AsyncClient, monkeypatch) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 200
@@ -90,7 +90,7 @@ async def test_generate_custom_counts(client: AsyncClient, monkeypatch) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 2, "num_questions": 2},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 200
@@ -121,7 +121,7 @@ async def test_generate_missing_topic_returns_422(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": ""},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -130,7 +130,7 @@ async def test_generate_topic_too_long_returns_422(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": "x" * 501},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -139,7 +139,7 @@ async def test_generate_num_participants_zero_returns_422(client: AsyncClient) -
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 0},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -148,7 +148,7 @@ async def test_generate_num_participants_too_many_returns_422(client: AsyncClien
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 16},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -157,7 +157,7 @@ async def test_generate_num_questions_zero_returns_422(client: AsyncClient) -> N
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_questions": 0},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -166,7 +166,7 @@ async def test_generate_num_questions_too_many_returns_422(client: AsyncClient) 
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_questions": 21},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -185,7 +185,7 @@ async def test_generate_llm_unreachable_returns_503(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 503
@@ -205,7 +205,7 @@ async def test_generate_bad_demographics_json_returns_500(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 500
@@ -220,7 +220,7 @@ async def test_generate_bad_questions_json_returns_500(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 500
@@ -257,7 +257,7 @@ async def test_generate_closes_provider(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == expected_status

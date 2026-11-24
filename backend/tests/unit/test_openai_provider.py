@@ -847,18 +847,31 @@ class TestBuildFromSettings:
     """api.config.build_llm_provider maps the LLM_* env vars onto the provider config."""
 
     @pytest.mark.parametrize(
-        ("env", "expected_effort", "expected_parallel"),
+        ("env", "expected_effort", "expected_parallel", "expected_ctx"),
         [
-            pytest.param({}, None, 4, id="defaults"),
+            pytest.param({}, None, 4, 8192, id="defaults"),
             pytest.param(
-                {"LLM_REASONING_EFFORT": "none", "LLM_MAX_PARALLEL": "8"}, "none", 8, id="set"
+                {"LLM_REASONING_EFFORT": "none", "LLM_MAX_PARALLEL": "8", "LLM_NUM_CTX": "32768"},
+                "none",
+                8,
+                32768,
+                id="set",
             ),
         ],
     )
     def test_maps_env(
-        self, env: dict[str, str], expected_effort: str | None, expected_parallel: int
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env: dict[str, str],
+        expected_effort: str | None,
+        expected_parallel: int,
+        expected_ctx: int,
     ) -> None:
         from api.config import Settings, build_llm_provider
+
+        # The real environment may set these; the test must see only its own values.
+        for name in ("LLM_REASONING_EFFORT", "LLM_MAX_PARALLEL", "LLM_NUM_CTX"):
+            monkeypatch.delenv(name, raising=False)
 
         settings = Settings(
             _env_file=None,
@@ -878,3 +891,100 @@ class TestBuildFromSettings:
         assert isinstance(provider, OpenAICompatibleProvider)
         assert provider.config.reasoning_effort == expected_effort
         assert provider.config.max_parallel_requests == expected_parallel
+        assert provider.max_context_tokens == expected_ctx
+
+
+class TestJsonSchema:
+    """json_schema maps to LM Studio's response_format (json_schema only, never json_object)."""
+
+    _SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+
+    @pytest.mark.asyncio
+    async def test_schema_sent_as_response_format(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion('{"a": "x"}')))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("Hello", json_schema=self._SCHEMA)
+
+        response_format = mock_client.post.call_args.kwargs["json"]["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["schema"] == self._SCHEMA
+
+    @pytest.mark.asyncio
+    async def test_no_schema_no_response_format(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("plain")))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("Hello")
+
+        assert "response_format" not in mock_client.post.call_args.kwargs["json"]
+
+
+class TestBuildWithSampling:
+    """build_llm_provider applies resolved sampling params to either provider config."""
+
+    @pytest.mark.parametrize("provider_type", ["openai", "ollama"])
+    def test_sampling_applied(self, monkeypatch: pytest.MonkeyPatch, provider_type: str) -> None:
+        from api.config import SamplingParams, Settings, build_llm_provider
+
+        settings = Settings(
+            _env_file=None,
+            LLM_PROVIDER=provider_type,
+            LLM_BASE_URL="http://host.test:1234",
+            LLM_MODEL="test-model",
+            ENTRA_TENANT_ID="t",
+            ENTRA_CLIENT_ID="c",
+            ENTRA_CLIENT_SECRET="s",
+            ENTRA_REDIRECT_URI="http://localhost/cb",
+            FRONTEND_URL="http://localhost:3000",
+            SESSION_SECRET_KEY="k",
+        )
+        sampling = SamplingParams(temperature=0.3, top_p=0.8, max_tokens=512, seed=11)
+
+        provider = build_llm_provider(settings, sampling)
+
+        config = provider.config
+        assert (config.temperature, config.top_p, config.max_tokens, config.seed) == (
+            0.3,
+            0.8,
+            512,
+            11,
+        )
+
+
+class TestCallLogging:
+    """One INFO line per completion; a WARNING when the prompt nears the context size."""
+
+    _LOGGER = "focus_group.llm.openai_compat"
+    _NUM_CTX = 8192
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt_tokens", "expect_warning"),
+        [
+            pytest.param(1000, False, id="well-under"),
+            pytest.param(7300, False, id="just-under-90pct"),
+            pytest.param(7400, True, id="over-90pct"),
+        ],
+    )
+    async def test_logs_usage_and_warns_near_limit(
+        self, caplog: pytest.LogCaptureFixture, prompt_tokens: int, expect_warning: bool
+    ) -> None:
+        provider = _hardening_provider(num_ctx=self._NUM_CTX)
+        usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 42}
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("ok", usage=usage)))
+
+        with caplog.at_level("INFO", logger=self._LOGGER):
+            with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+                await provider.generate("Hello")
+
+        info = [r for r in caplog.records if r.levelname == "INFO" and r.name == self._LOGGER]
+        assert len(info) == 1
+        assert f"prompt_tokens={prompt_tokens}" in info[0].getMessage()
+        assert "completion_tokens=42" in info[0].getMessage()
+        warned = any(
+            r.levelname == "WARNING" and "context" in r.getMessage() for r in caplog.records
+        )
+        assert warned is expect_warning

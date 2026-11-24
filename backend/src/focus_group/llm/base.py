@@ -6,6 +6,28 @@ LLM backends (Ollama, OpenAI, Anthropic, etc.).
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class UsageTotals:
+    """Token usage accumulated across every completion this provider received."""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    max_prompt_tokens: int = 0
+
+    def record(self, usage: dict[str, Any] | None) -> None:
+        """Add one response's `usage` block. A missing block still counts the call."""
+        self.calls += 1
+        if not usage:
+            return
+        prompt = int(usage.get("prompt_tokens") or 0)
+        self.prompt_tokens += prompt
+        self.completion_tokens += int(usage.get("completion_tokens") or 0)
+        self.max_prompt_tokens = max(self.max_prompt_tokens, prompt)
 
 
 class BaseLLMProvider(ABC):
@@ -26,6 +48,7 @@ class BaseLLMProvider(ABC):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate text from the LLM based on the given prompt.
 
@@ -36,6 +59,9 @@ class BaseLLMProvider(ABC):
         Args:
             prompt: The user prompt/question to send to the LLM
             system_prompt: Optional system prompt to set context/behavior
+            json_schema: Optional JSON Schema (an object schema) the reply must match.
+                Providers map it to their structured-output option; callers must
+                still parse defensively.
 
         Returns:
             The generated text response from the LLM
@@ -86,6 +112,11 @@ class BaseLLMProvider(ABC):
             The model name/identifier
         """
         pass
+
+    @property
+    def usage_totals(self) -> UsageTotals | None:
+        """Token usage reported by the server, or None if the provider doesn't track it."""
+        return None
 
     async def aclose(self) -> None:
         """Release any pooled connections held by the provider.

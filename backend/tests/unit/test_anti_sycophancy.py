@@ -1,5 +1,7 @@
 """Unit tests for anti-sycophancy, stance diversity, communication register, and N10 detection."""
 
+import pytest
+
 from focus_group.core.participant import Participant
 from focus_group.core.response_generator import ResponseGenerator
 from focus_group.core.speaker_selection import NextSpeakerSelector
@@ -337,3 +339,46 @@ class TestN10ReactionExtraction:
         result = ResponseGenerator._extract_notable_reaction(reactions, "Bob")
         assert result is not None
         assert result[0] == "Alice"
+
+
+class TestBodyLanguageRestraint:
+    """Live runs showed body-language remarks in 42% of spoken turns; keep them occasional."""
+
+    _REACTIONS = {"Other Person": "leans forward and nods slowly"}
+    _TURNS = 6
+
+    @pytest.mark.asyncio
+    async def test_cue_injected_only_every_nth_followup(self) -> None:
+        from focus_group.core.response_generator import BODY_LANGUAGE_CUE_EVERY_N_TURNS
+
+        provider = MockLLMProvider()
+        gen = ResponseGenerator(provider)
+        participant = _make_participant(_make_persona(), provider)
+
+        for _ in range(self._TURNS):
+            await gen.generate_response_to_participant(
+                participant=participant,
+                speaker_name="Other Person",
+                speaker_statement="Buses are late every winter.",
+                question="How do you get to campus?",
+                reactions=self._REACTIONS,
+            )
+
+        cued = [c for c in provider._calls if "you notice Other Person" in c["prompt"]]
+        assert len(cued) == self._TURNS // BODY_LANGUAGE_CUE_EVERY_N_TURNS
+
+    def test_system_prompt_keeps_body_language_occasional(self) -> None:
+        provider = MockLLMProvider()
+        prompt = ResponseGenerator(provider)._build_response_system_prompt(
+            _make_participant(_make_persona(), provider)
+        )
+        assert "Most turns should not mention body language" in prompt
+        assert "Never open your turn" in prompt
+
+    def test_system_prompt_discourages_invented_statistics(self) -> None:
+        provider = MockLLMProvider()
+        prompt = ResponseGenerator(provider)._build_response_system_prompt(
+            _make_participant(_make_persona(), provider)
+        )
+        assert "statistics" in prompt
+        assert "personal experience" in prompt

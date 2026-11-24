@@ -287,6 +287,7 @@ class MockLLMProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate a mock response based on prompt patterns.
 
@@ -302,6 +303,7 @@ class MockLLMProvider(BaseLLMProvider):
             {
                 "prompt": prompt,
                 "system_prompt": system_prompt,
+                "json_schema": json_schema,
                 "call_number": self._call_count,
             }
         )
@@ -416,6 +418,7 @@ class SequentialMockProvider(MockLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Return the next response in sequence."""
         self._call_count += 1
@@ -423,6 +426,7 @@ class SequentialMockProvider(MockLLMProvider):
             {
                 "prompt": prompt,
                 "system_prompt": system_prompt,
+                "json_schema": json_schema,
                 "call_number": self._call_count,
             }
         )

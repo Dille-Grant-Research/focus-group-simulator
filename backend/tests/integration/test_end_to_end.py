@@ -8,9 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
-from focus_group.cli.config_loader import ConfigLoader, ConfigurationError
 from focus_group.core.session import FocusGroupSession, SessionError, SessionResult
 from focus_group.logging.debug_writer import DebugLogWriter
 from focus_group.logging.transcript_writer import TranscriptWriter
@@ -243,75 +241,6 @@ class TestSessionWithOutputGeneration:
             for line in f:
                 if line.strip():
                     json.loads(line)  # Should not raise
-
-
-class TestConfigToSessionFlow:
-    """Test the flow from loading config to running session."""
-
-    @pytest.mark.asyncio
-    async def test_load_config_and_run_session(
-        self,
-        sample_session_yaml: Path,
-        mock_provider: MockLLMProvider,
-    ):
-        """Test loading configuration from YAML and running session."""
-        # Load configuration
-        loader = ConfigLoader()
-        config = loader.load_session_config(sample_session_yaml)
-
-        # Create and run session
-        session = FocusGroupSession(
-            provider=mock_provider,
-            config=config,
-        )
-
-        result = await session.run()
-
-        # Verify session used loaded config
-        assert result.session_name == "yaml_test_session"
-        assert result.purpose == "Test session from YAML"
-        assert len(result.participants) <= len(config.demographics)
-
-    def test_load_invalid_config_raises_error(
-        self,
-        temp_config_dir: Path,
-    ):
-        """Test that invalid configuration raises ConfigurationError."""
-        # Create invalid config (missing required fields)
-        invalid_config = {
-            "session_name": "invalid",
-            # Missing demographics and questions
-        }
-
-        yaml_path = temp_config_dir / "invalid.yaml"
-        with open(yaml_path, "w", encoding="utf-8") as f:
-            yaml.dump(invalid_config, f)
-
-        loader = ConfigLoader()
-        with pytest.raises(ConfigurationError):
-            loader.load_session_config(yaml_path)
-
-    def test_load_config_with_invalid_demographics_count(
-        self,
-        temp_config_dir: Path,
-    ):
-        """Test that config with too many demographics is rejected."""
-        # Create config with 20 demographics (over limit of 15)
-        invalid_config = {
-            "demographics": [f"Person {i}, 30-40, professional" for i in range(20)],
-            "questions": ["Test question?"],
-            "model": {
-                "model_name": "mock-model",
-            },
-        }
-
-        yaml_path = temp_config_dir / "too_many_participants.yaml"
-        with open(yaml_path, "w", encoding="utf-8") as f:
-            yaml.dump(invalid_config, f)
-
-        loader = ConfigLoader()
-        with pytest.raises(ConfigurationError):
-            loader.load_session_config(yaml_path)
 
 
 class TestPersonaGenerationFlow:

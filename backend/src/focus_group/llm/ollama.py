@@ -7,6 +7,7 @@ API access.
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 
@@ -125,6 +126,7 @@ class OllamaProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate text from the Ollama model.
 
@@ -146,7 +148,7 @@ class OllamaProvider(BaseLLMProvider):
 
         for attempt in range(self._max_retries + 1):
             try:
-                return await self._generate_once(prompt, system_prompt)
+                return await self._generate_once(prompt, system_prompt, json_schema)
             except OllamaConnectionError:
                 # Connection errors are not retryable
                 raise
@@ -168,6 +170,7 @@ class OllamaProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Perform a single generation request to Ollama.
 
@@ -197,10 +200,18 @@ class OllamaProvider(BaseLLMProvider):
         # Add GPU layers if specified
         if self._config.num_gpu != -1:
             payload["options"]["num_gpu"] = self._config.num_gpu
+        if self._config.max_tokens is not None:
+            payload["options"]["num_predict"] = self._config.max_tokens
+        if self._config.seed is not None:
+            payload["options"]["seed"] = self._config.seed
 
         # Add system prompt if provided
         if system_prompt:
             payload["system"] = system_prompt
+
+        # Ollama's structured output takes the JSON Schema directly in "format"
+        if json_schema is not None:
+            payload["format"] = json_schema
 
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:

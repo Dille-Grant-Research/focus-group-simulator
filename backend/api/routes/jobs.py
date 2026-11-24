@@ -90,6 +90,17 @@ class JobSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _serialize_config(config: SessionConfig) -> str:
+    """Serialize a submitted config for storage.
+
+    `model` keeps only the fields the submitter actually set, so the worker can tell
+    submitted sampling values from defaults (see api.config.resolve_sampling).
+    """
+    data = config.model_dump(mode="json")
+    data["model"] = config.model.model_dump(mode="json", exclude_unset=True)
+    return json.dumps(data)
+
+
 @router.post("", status_code=202, response_model=JobSubmitResponse)
 async def submit_job(
     body: JobSubmitRequest,
@@ -98,7 +109,7 @@ async def submit_job(
     settings: Settings = Depends(get_settings),
 ) -> JobSubmitResponse:
     user_id: str = request.state.user_id
-    config_json = body.config.model_dump_json()
+    config_json = _serialize_config(body.config)
     idempotency_key = hashlib.sha256(f"{user_id}:{config_json}".encode()).hexdigest()
 
     existing = await get_job_by_idempotency_key(db, idempotency_key, user_id)
@@ -193,6 +204,7 @@ async def get_job_result(
                 "started_at": row["started_at"],
                 "completed_at": row["completed_at"],
                 "expires_at": row["expires_at"],
+                "run": json.loads(row["run_metadata_json"]) if row["run_metadata_json"] else None,
             },
         }
     )

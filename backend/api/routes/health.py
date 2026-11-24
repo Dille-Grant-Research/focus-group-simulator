@@ -80,14 +80,14 @@ async def metrics(request: Request) -> JSONResponse:
         completed_24h_row = await (
             await db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'completed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 
         failed_24h_row = await (
             await db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'failed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 
@@ -95,7 +95,7 @@ async def metrics(request: Request) -> JSONResponse:
             await db.execute(
                 "SELECT AVG(CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS INTEGER))"
                 " FROM jobs WHERE status = 'completed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 

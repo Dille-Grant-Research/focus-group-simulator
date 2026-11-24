@@ -9,12 +9,12 @@ import asyncio
 import logging
 import os
 import re
-from dataclasses import dataclass
+import time
 from typing import Any
 
 import httpx
 
-from focus_group.llm.base import BaseLLMProvider
+from focus_group.llm.base import BaseLLMProvider, UsageTotals
 from focus_group.models.config import CloudModelConfig
 from focus_group.utils.tokens import count_tokens as estimate_tokens
 
@@ -29,6 +29,10 @@ _HTTP_BAD_REQUEST = 400
 # exceed the server's loaded context (one pool shared by all concurrent requests).
 _CONTEXT_OVERFLOW_MARKER = "context size has been exceeded"
 _FINISH_REASON_LENGTH = "length"
+_RESPONSE_SCHEMA_NAME = "response"
+# Warn when a single prompt uses this share of num_ctx. On cruncher the context is
+# one pool shared by concurrent requests, so a prompt this large blocks parallelism.
+_CONTEXT_WARNING_FRACTION = 0.9
 
 # Reasoning models (e.g. Qwen3) may emit their chain of thought inline as
 # <think>...</think>. An unclosed block means the response was truncated mid-thought.
@@ -60,25 +64,6 @@ class OpenAIContextOverflowError(OpenAIGenerationError):
 
     pass
 
-
-@dataclass
-class UsageTotals:
-    """Token usage accumulated across every completion this provider received."""
-
-    calls: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    max_prompt_tokens: int = 0
-
-    def record(self, usage: dict[str, Any] | None) -> None:
-        """Add one response's `usage` block. A missing block still counts the call."""
-        self.calls += 1
-        if not usage:
-            return
-        prompt = int(usage.get("prompt_tokens") or 0)
-        self.prompt_tokens += prompt
-        self.completion_tokens += int(usage.get("completion_tokens") or 0)
-        self.max_prompt_tokens = max(self.max_prompt_tokens, prompt)
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):
@@ -234,6 +219,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate text from the cloud model.
 
@@ -256,7 +242,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
         for attempt in range(self._max_retries + 1):
             try:
-                return await self._generate_once(prompt, system_prompt)
+                return await self._generate_once(prompt, system_prompt, json_schema)
             except OpenAIConnectionError:
                 # Auth/connection errors are not retryable
                 raise
@@ -284,6 +270,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
         """Perform a single generation request to the API.
 
@@ -314,9 +301,17 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             payload["reasoning_effort"] = self._config.reasoning_effort
         if self._config.seed is not None:
             payload["seed"] = self._config.seed
+        if json_schema is not None:
+            # LM Studio accepts only "json_schema" here; "json_object" is an HTTP 400.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": _RESPONSE_SCHEMA_NAME, "strict": True, "schema": json_schema},
+            }
 
+        started = time.monotonic()
         try:
             async with self._semaphore:
+                started = time.monotonic()  # exclude time spent queued for a slot
                 response = await self._get_client().post(
                     f"{self._config.base_url}/v1/chat/completions",
                     headers=self._headers(),
@@ -335,9 +330,30 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         except httpx.RequestError as e:
             raise OpenAIGenerationError(f"Failed to communicate with API: {e}") from e
 
-        return self._parse_response(response)
+        return self._parse_response(response, time.monotonic() - started)
 
-    def _parse_response(self, response: httpx.Response) -> str:
+    def _log_usage(self, usage: dict[str, Any] | None, latency_seconds: float) -> None:
+        """One INFO line per completion, plus a WARNING when the prompt nears num_ctx."""
+        usage = usage or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        logger.info(
+            "LLM call model=%s latency=%.2fs prompt_tokens=%d completion_tokens=%d",
+            self._config.model_name,
+            latency_seconds,
+            prompt_tokens,
+            int(usage.get("completion_tokens") or 0),
+        )
+        limit = self._config.num_ctx * _CONTEXT_WARNING_FRACTION
+        if prompt_tokens > limit:
+            logger.warning(
+                "Prompt used %d of %d context tokens (over %d%%); "
+                "the shared context pool may overflow. Consider asking IT for a larger context.",
+                prompt_tokens,
+                self._config.num_ctx,
+                round(_CONTEXT_WARNING_FRACTION * 100),
+            )
+
+    def _parse_response(self, response: httpx.Response, latency_seconds: float = 0.0) -> str:
         """Turn a chat completion response into content, or raise the matching error.
 
         Raises:
@@ -374,6 +390,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
         data = response.json()
         self._usage.record(data.get("usage"))
+        self._log_usage(data.get("usage"), latency_seconds)
 
         choices = data.get("choices", [])
         if not choices:

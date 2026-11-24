@@ -5,6 +5,8 @@ Sensitive values are validated at startup — the app will not start if they
 are missing.
 """
 
+import secrets
+from dataclasses import dataclass
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -20,6 +22,10 @@ from focus_group.models.config import (
 )
 
 DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300
+DEFAULT_LLM_MAX_TOKENS = 2048
+DEFAULT_LLM_NUM_CTX = 8192
+# Server-chosen seeds stay in the signed 32-bit range every backend accepts.
+_SEED_UPPER_BOUND = 2**31 - 1
 SUPPORTED_LLM_PROVIDERS = (LLMProviderType.OLLAMA, LLMProviderType.OPENAI)
 
 
@@ -39,6 +45,12 @@ class Settings(BaseSettings):
     # OpenAI-compatible only. Max chat completions in flight at once. Cruncher's
     # loaded context is one pool shared by concurrent requests, so keep this low.
     LLM_MAX_PARALLEL: int = DEFAULT_MAX_PARALLEL_REQUESTS
+    # Default and ceiling for max_tokens per reply. Submitted values above it are
+    # lowered to it, since cruncher's context is shared by all requests in flight.
+    LLM_MAX_TOKENS: int = DEFAULT_LLM_MAX_TOKENS
+    # The context size the server has loaded (cruncher: 8192 today). Used for
+    # near-limit warnings and context budgeting; it does not change the server.
+    LLM_NUM_CTX: int = DEFAULT_LLM_NUM_CTX
 
     # Microsoft Entra SSO
     ENTRA_TENANT_ID: str
@@ -100,8 +112,58 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def build_llm_provider(settings: Settings) -> BaseLLMProvider:
-    """Build the inference provider used by the worker, /generate and /health."""
+@dataclass(frozen=True)
+class SamplingParams:
+    """Sampling settings for one job: what was submitted, capped and defaulted by the server."""
+
+    temperature: float
+    top_p: float
+    max_tokens: int
+    seed: int | None
+
+
+_DEFAULT_TEMPERATURE: float = CloudModelConfig.model_fields["temperature"].default
+_DEFAULT_TOP_P: float = CloudModelConfig.model_fields["top_p"].default
+
+
+def resolve_sampling(
+    settings: Settings, submitted: OllamaModelConfig | CloudModelConfig | None
+) -> SamplingParams:
+    """Apply a job's submitted sampling settings over server defaults.
+
+    Only fields the submitter actually set are honoured. Model, URL and context
+    size stay server-controlled. max_tokens is capped at LLM_MAX_TOKENS, and a
+    seed is chosen by the server when none is submitted so every run is reproducible.
+    """
+    given = submitted.model_fields_set if submitted is not None else set()
+
+    def _pick(name: str, default):  # noqa: ANN001, ANN202
+        value = getattr(submitted, name, None) if name in given else None
+        return default if value is None else value
+
+    seed = _pick("seed", None)
+    return SamplingParams(
+        temperature=_pick("temperature", _DEFAULT_TEMPERATURE),
+        top_p=_pick("top_p", _DEFAULT_TOP_P),
+        max_tokens=min(_pick("max_tokens", settings.LLM_MAX_TOKENS), settings.LLM_MAX_TOKENS),
+        seed=seed if seed is not None else secrets.randbelow(_SEED_UPPER_BOUND),
+    )
+
+
+def build_llm_provider(
+    settings: Settings, sampling: SamplingParams | None = None
+) -> BaseLLMProvider:
+    """Build the inference provider used by the worker, /generate and /health.
+
+    Without sampling (health checks, /generate) server defaults apply and no seed is sent.
+    """
+    if sampling is None:
+        sampling = SamplingParams(
+            temperature=_DEFAULT_TEMPERATURE,
+            top_p=_DEFAULT_TOP_P,
+            max_tokens=settings.LLM_MAX_TOKENS,
+            seed=None,
+        )
     if settings.LLM_PROVIDER == LLMProviderType.OPENAI:
         return create_provider(
             CloudModelConfig(
@@ -111,8 +173,21 @@ def build_llm_provider(settings: Settings) -> BaseLLMProvider:
                 request_timeout_seconds=settings.LLM_REQUEST_TIMEOUT_SECONDS,
                 reasoning_effort=settings.LLM_REASONING_EFFORT or None,
                 max_parallel_requests=settings.LLM_MAX_PARALLEL,
+                num_ctx=settings.LLM_NUM_CTX,
+                temperature=sampling.temperature,
+                top_p=sampling.top_p,
+                max_tokens=sampling.max_tokens,
+                seed=sampling.seed,
             )
         )
     return create_provider(
-        OllamaModelConfig(model_name=settings.LLM_MODEL, base_url=settings.llm_base_url)
+        OllamaModelConfig(
+            model_name=settings.LLM_MODEL,
+            base_url=settings.llm_base_url,
+            num_ctx=settings.LLM_NUM_CTX,
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            max_tokens=sampling.max_tokens,
+            seed=sampling.seed,
+        )
     )

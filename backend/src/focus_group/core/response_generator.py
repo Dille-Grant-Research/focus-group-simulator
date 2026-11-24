@@ -101,6 +101,12 @@ _BODY_PART_INDICATORS = frozenset(
 )
 
 
+# Give a follow-up speaker a "you notice X is ..." cue only on every Nth follow-up.
+# Almost any reaction counts as notable, so cueing every turn put body-language
+# remarks into 42% of spoken turns in a live run (2026-11-24).
+BODY_LANGUAGE_CUE_EVERY_N_TURNS = 3
+
+
 class ResponseGenerator:
     """Generates verbal responses from focus group participants.
 
@@ -129,6 +135,7 @@ class ResponseGenerator:
             provider: The LLM provider to use for generating responses
         """
         self._provider = provider
+        self._followup_turns = 0
 
     async def generate_response(
         self,
@@ -274,10 +281,11 @@ IMPORTANT INSTRUCTIONS:
 - VARY your sentence openers. Do NOT repeatedly start responses with "Honestly,", "For me,", "I think", "Well,", "You know," or other filler phrases
 - Look at what you have already said in the conversation above — choose a DIFFERENT opening style each time
 - Be direct and specific rather than hedging with filler language
-- Pay attention to non-verbal reactions shown in [brackets] in the conversation
-- These bracketed entries represent body language you can see in the room
-- When prompted that you notice specific body language, weave a brief, natural acknowledgment into your response (e.g., "I can see you're nodding, David..." or "You look skeptical, Maya...")
-- Keep any body language references brief and natural - a short aside, not the focus of your response"""
+- Entries in [brackets] like [{persona.name}'s reaction: ...] are YOUR OWN earlier non-verbal reactions: how you physically reacted, which others may have noticed. Let them inform your mood and tone, but never talk about them as if someone else did them
+- You only know about another participant's body language when the prompt says you notice it
+- Most turns should not mention body language at all. When the prompt says you notice someone's body language, mention it only if it changes what you want to say (e.g., "You look skeptical, Maya, so let me explain..."). Never open your turn with someone's body language
+- Keep any body language references brief and natural - a short aside, not the focus of your response
+- Speak from personal experience, the way people talk in a real focus group. Do not quote statistics, percentages or study figures unless someone with your background would genuinely know them, and even then keep them rough ("most mornings", "about half the time")"""
 
     def _build_response_user_prompt(self, context: str, prompt: str) -> str:
         """Build the user prompt for generating a response.
@@ -293,7 +301,7 @@ IMPORTANT INSTRUCTIONS:
 
 {context}
 
-Note: Entries in [brackets] like [Name's reaction: ...] are body language you can see in the room.
+Note: Entries in [brackets] like [Name's reaction: ...] are your own earlier non-verbal reactions, not things you saw other participants do.
 
 ---
 
@@ -356,7 +364,8 @@ Remember: Provide only your verbal response - what you would actually say out lo
             parts.append(ctx["working_memory"])
             parts.append("")
 
-        # Also include raw non-verbal context for body language cues
+        # Include the participant's own recent non-verbal reactions. Each participant's
+        # context only ever holds their own reactions, so label them that way.
         context = participant.get_context_for_llm(include_nonverbals=True)
         # Extract only the bracketed non-verbal lines
         nonverbal_lines = [
@@ -365,7 +374,7 @@ Remember: Provide only your verbal response - what you would actually say out lo
             if line.strip().startswith("[") and "reaction:" in line.lower()
         ]
         if nonverbal_lines:
-            parts.append("=== BODY LANGUAGE YOU CAN SEE ===")
+            parts.append("=== YOUR OWN RECENT REACTIONS (your body language, not others') ===")
             parts.extend(nonverbal_lines[-5:])  # Last 5 reactions
             parts.append("")
 
@@ -581,15 +590,17 @@ Remember: Provide only your verbal introduction - what you would actually say ou
             f"Do NOT start by validating what they said. Jump straight to your own point."
         )
 
-        # Inject notable reaction cue if available
-        if reactions:
+        # Inject a notable reaction cue, but only on every Nth follow-up turn
+        self._followup_turns += 1
+        cue_turn = (self._followup_turns - 1) % BODY_LANGUAGE_CUE_EVERY_N_TURNS == 0
+        if reactions and cue_turn:
             notable = self._extract_notable_reaction(reactions, participant.name)
             if notable:
                 reactor_name, reaction_text = notable
                 simplified = self._simplify_reaction(reaction_text, reactor_name)
                 prompt += (
                     f"\n\nAs you prepare to speak, you notice {reactor_name} is "
-                    f"{simplified}. You may naturally acknowledge what you observe."
+                    f"{simplified}. Only mention it if it matters to your point."
                 )
 
         return await self.generate_response(participant, prompt, stance_matrix=stance_matrix)

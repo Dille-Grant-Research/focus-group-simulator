@@ -17,7 +17,7 @@ from httpx import AsyncClient
 
 from api.config import get_settings
 from api.database import get_db, update_job
-from tests.api.helpers import _MINIMAL_JOB_CONFIG, _TEST_USER_A, session_cookies
+from tests.api.helpers import _MINIMAL_JOB_CONFIG, _TEST_USER_A, session_headers
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ async def test_metrics_returns_expected_fields(client: AsyncClient) -> None:
 
 async def test_metrics_queue_depth_reflects_queued_jobs(client: AsyncClient) -> None:
     await client.post(
-        "/api/v1/jobs", json=_MINIMAL_JOB_CONFIG, cookies=session_cookies(_TEST_USER_A)
+        "/api/v1/jobs", json=_MINIMAL_JOB_CONFIG, headers=session_headers(_TEST_USER_A)
     )
 
     resp = await client.get("/metrics")
@@ -143,7 +143,7 @@ async def test_metrics_counts_completed_jobs(client: AsyncClient) -> None:
     from datetime import datetime, timezone
 
     submit = await client.post(
-        "/api/v1/jobs", json=_MINIMAL_JOB_CONFIG, cookies=session_cookies(_TEST_USER_A)
+        "/api/v1/jobs", json=_MINIMAL_JOB_CONFIG, headers=session_headers(_TEST_USER_A)
     )
     job_id = submit.json()["job_id"]
 
@@ -164,6 +164,35 @@ async def test_metrics_counts_completed_jobs(client: AsyncClient) -> None:
     data = resp.json()
     assert data["jobs_completed_24h"] == 1
     assert data["queue_depth"] == 0
+
+
+_OUTSIDE_METRICS_WINDOW_HOURS = 26
+
+
+async def test_metrics_excludes_jobs_completed_before_window(client: AsyncClient) -> None:
+    """A job finished 26h ago is outside the 24h window even when its date matches."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    submit = await client.post(
+        "/api/v1/jobs", json=_MINIMAL_JOB_CONFIG, headers=session_headers(_TEST_USER_A)
+    )
+    old = (
+        datetime.now(timezone.utc) - timedelta(hours=_OUTSIDE_METRICS_WINDOW_HOURS)
+    ).isoformat()
+    async with get_db(get_settings().DB_PATH) as db:
+        await update_job(
+            db,
+            submit.json()["job_id"],
+            status="completed",
+            result_json=json.dumps({"transcript": []}),
+            started_at=old,
+            completed_at=old,
+        )
+
+    data = (await client.get("/metrics")).json()
+
+    assert data["jobs_completed_24h"] == 0
 
 
 # ---------------------------------------------------------------------------

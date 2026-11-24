@@ -157,7 +157,7 @@ Cookie: session=<value>
 | `status` | string | `queued`, `running`, `completed`, or `failed` |
 | `created_at` | string | ISO 8601 timestamp — when job was submitted |
 | `started_at` | string or null | ISO 8601 timestamp — when the worker picked it up |
-| `completed_at` | string or null | ISO 8601 timestamp — when simulation finished |
+| `completed_at` | string or null | ISO 8601 timestamp — when the job finished, set for both `completed` and `failed`; null while `queued` or `running` |
 | `expires_at` | string | ISO 8601 timestamp — job and result deleted after this date (30 days) |
 | `queue_position` | integer or null | Position in the queue if `queued`; null otherwise |
 
@@ -234,10 +234,34 @@ Cookie: session=<value>
     "created_at": "2026-05-02T14:00:00Z",
     "started_at": "2026-05-02T14:01:30Z",
     "completed_at": "2026-05-02T14:07:45Z",
-    "expires_at": "2026-06-01T14:00:00Z"
+    "expires_at": "2026-06-01T14:00:00Z",
+    "run": {
+      "provider": "openai",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "params": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 2048,
+        "seed": 1834201977,
+        "reasoning_effort": "none"
+      },
+      "usage": {
+        "calls": 61,
+        "prompt_tokens": 98213,
+        "completion_tokens": 7408,
+        "max_prompt_tokens": 3120
+      },
+      "duration_seconds": 372.4
+    }
   }
 }
 ```
+
+`metadata.run` records what produced the result, so a run can be reported and reproduced:
+the server's provider and model, the sampling settings actually used, token usage reported by
+the inference server (`usage` is null if the provider doesn't report it), and wall-clock time.
+Submit the same config with `"model": {"seed": <params.seed>}` to reproduce a run. `run` is null
+for jobs that finished before this field existed.
 
 **Note:** The `result` object contains the raw simulation output. Shape may vary depending on whether memory/stance tracking was enabled in the session config.
 

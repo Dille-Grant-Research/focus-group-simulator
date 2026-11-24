@@ -50,6 +50,16 @@ class OllamaModelConfig(BaseModel):
         ge=0.0,
         le=1.0,
     )
+    max_tokens: int | None = Field(
+        default=None,
+        description="Maximum tokens in the response (sent as num_predict). None = model default.",
+        ge=1,
+        le=32768,
+    )
+    seed: int | None = Field(
+        default=None,
+        description="Sampling seed for reproducible output. Sent only when set.",
+    )
 
 
 class CloudModelConfig(BaseModel):
@@ -116,35 +126,6 @@ class CloudModelConfig(BaseModel):
         default=DEFAULT_MAX_PARALLEL_REQUESTS,
         description="Maximum chat completions in flight at once from this provider",
         ge=1,
-    )
-
-
-class ModelConfig(BaseModel):
-    """Combined model configuration with primary and optional fallback."""
-
-    primary: OllamaModelConfig = Field(
-        default_factory=OllamaModelConfig,
-        description="Primary model configuration (Ollama)",
-    )
-    fallback: CloudModelConfig | None = Field(
-        default=None,
-        description="Optional fallback cloud model configuration",
-    )
-    use_fallback_on_error: bool = Field(
-        default=True,
-        description="Whether to use fallback model when primary fails",
-    )
-    max_retries: int = Field(
-        default=3,
-        description="Maximum number of retry attempts",
-        ge=0,
-        le=10,
-    )
-    retry_delay_seconds: float = Field(
-        default=1.0,
-        description="Initial delay between retries (exponential backoff)",
-        ge=0.1,
-        le=60.0,
     )
 
 

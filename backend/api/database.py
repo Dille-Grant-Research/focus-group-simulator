@@ -41,9 +41,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at      TEXT,
     participant_count INTEGER,
     total_turns       INTEGER,
-    consensus_level   TEXT
+    consensus_level   TEXT,
+    run_metadata_json TEXT
 )
 """
+
+# Columns added after the first release. init_db adds any that an existing
+# database file is missing, so deployed volumes upgrade in place.
+_ADDED_JOB_COLUMNS = {
+    "run_metadata_json": "TEXT",
+}
 
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_jobs_user        ON jobs(user_id)",
@@ -63,9 +70,18 @@ async def init_db(db_path: str) -> None:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_USERS)
         await db.execute(_CREATE_JOBS)
+        await _add_missing_job_columns(db)
         for stmt in _CREATE_INDEXES:
             await db.execute(stmt)
         await db.commit()
+
+
+async def _add_missing_job_columns(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(jobs)")
+    existing = {row[1] for row in await cursor.fetchall()}
+    for name, column_type in _ADDED_JOB_COLUMNS.items():
+        if name not in existing:
+            await db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {column_type}")
 
 
 async def startup_recovery(db_path: str) -> None:
@@ -96,6 +112,12 @@ async def get_db(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Timestamps are stored as Python ISO strings ("2026-11-23T01:00:00+00:00") but
+# SQLite's datetime('now') is "2026-11-23 03:00:00". Compared as text, 'T' > ' '
+# makes any time earlier the same UTC day look newer than 'now'. Always compare
+# through julianday(), which parses both formats (and the offset) to a number.
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +169,7 @@ async def update_job(db: aiosqlite.Connection, job_id: str, **fields: object) ->
 
 
 async def delete_expired_jobs(db: aiosqlite.Connection) -> None:
-    await db.execute("DELETE FROM jobs WHERE expires_at < datetime('now')")
+    await db.execute("DELETE FROM jobs WHERE julianday(expires_at) < julianday('now')")
     await db.commit()
 
 
@@ -177,7 +199,7 @@ async def get_job_by_idempotency_key(
         WHERE idempotency_key = ?
           AND user_id = ?
           AND status != 'failed'
-          AND created_at > datetime('now', '-10 minutes')
+          AND julianday(created_at) > julianday('now', '-10 minutes')
         """,
         (key, user_id),
     )
@@ -215,7 +237,7 @@ async def count_user_jobs_in_window(
         SELECT COUNT(*) FROM jobs
         WHERE user_id = ?
           AND status != 'failed'
-          AND created_at > datetime('now', ? || ' hours')
+          AND julianday(created_at) > julianday('now', ? || ' hours')
         """,
         (user_id, f"-{hours}"),
     )
