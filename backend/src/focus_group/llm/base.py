@@ -87,6 +87,14 @@ class BaseLLMProvider(ABC):
         """
         pass
 
+    async def aclose(self) -> None:
+        """Release any pooled connections held by the provider.
+
+        Providers that keep a long-lived HTTP client override this. Safe to call
+        more than once; a later generate() call may reopen resources.
+        """
+        return None
+
     @abstractmethod
     async def is_available(self) -> bool:
         """Check if the LLM provider is available and healthy.

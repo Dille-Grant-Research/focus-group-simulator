@@ -12,7 +12,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from focus_group.llm.base import BaseLLMProvider
 from focus_group.llm.factory import create_provider
-from focus_group.models.config import CloudModelConfig, LLMProviderType, OllamaModelConfig
+from focus_group.models.config import (
+    DEFAULT_MAX_PARALLEL_REQUESTS,
+    CloudModelConfig,
+    LLMProviderType,
+    OllamaModelConfig,
+)
 
 DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300
 SUPPORTED_LLM_PROVIDERS = (LLMProviderType.OLLAMA, LLMProviderType.OPENAI)
@@ -28,6 +33,12 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str  # scheme://host:port, no trailing /v1
     LLM_MODEL: str
     LLM_REQUEST_TIMEOUT_SECONDS: int = DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
+    # OpenAI-compatible only. "none" stops reasoning models (Qwen3 on cruncher)
+    # from spending max_tokens on reasoning and returning empty content.
+    LLM_REASONING_EFFORT: str | None = None
+    # OpenAI-compatible only. Max chat completions in flight at once. Cruncher's
+    # loaded context is one pool shared by concurrent requests, so keep this low.
+    LLM_MAX_PARALLEL: int = DEFAULT_MAX_PARALLEL_REQUESTS
 
     # Microsoft Entra SSO
     ENTRA_TENANT_ID: str
@@ -98,6 +109,8 @@ def build_llm_provider(settings: Settings) -> BaseLLMProvider:
                 model_name=settings.LLM_MODEL,
                 base_url=settings.llm_base_url,
                 request_timeout_seconds=settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                reasoning_effort=settings.LLM_REASONING_EFFORT or None,
+                max_parallel_requests=settings.LLM_MAX_PARALLEL,
             )
         )
     return create_provider(

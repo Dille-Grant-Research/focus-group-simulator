@@ -225,3 +225,40 @@ async def test_generate_bad_questions_json_returns_500(
 
     assert resp.status_code == 500
     assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Provider lifecycle
+# ---------------------------------------------------------------------------
+
+
+class _ClosingTracker(SequentialMockProvider):
+    """Sequential mock that records whether the route closed it."""
+
+    closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_status"),
+    [
+        pytest.param([_DEMOGRAPHICS_JSON, _QUESTIONS_JSON], 200, id="success"),
+        pytest.param(["not json"], 500, id="parse-failure"),
+    ],
+)
+async def test_generate_closes_provider(
+    client: AsyncClient, monkeypatch, responses: list[str], expected_status: int
+) -> None:
+    provider = _ClosingTracker(responses=responses, loop=False)
+    monkeypatch.setattr("api.routes.generate.build_llm_provider", lambda _settings: provider)
+
+    resp = await client.post(
+        "/api/v1/generate",
+        json={"research_topic": _VALID_TOPIC},
+        cookies=session_cookies(_TEST_USER_A),
+    )
+
+    assert resp.status_code == expected_status
+    assert provider.closed is True

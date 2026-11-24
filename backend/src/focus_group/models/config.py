@@ -5,6 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+# Concurrent chat completions per provider. LM Studio on cruncher shares one
+# context pool across all in-flight requests, so this is kept small by default.
+DEFAULT_MAX_PARALLEL_REQUESTS = 4
 
 class LLMProviderType(str, Enum):
     """Supported LLM provider types."""
@@ -97,6 +100,22 @@ class CloudModelConfig(BaseModel):
         default=120.0,
         description="Per-request HTTP timeout for chat completions",
         gt=0,
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description=(
+            "Sent as `reasoning_effort` when set. Use 'none' for reasoning models on "
+            "LM Studio, otherwise reasoning can consume max_tokens and leave content empty."
+        ),
+    )
+    seed: int | None = Field(
+        default=None,
+        description="Sampling seed for reproducible output. Sent only when set.",
+    )
+    max_parallel_requests: int = Field(
+        default=DEFAULT_MAX_PARALLEL_REQUESTS,
+        description="Maximum chat completions in flight at once from this provider",
+        ge=1,
     )
 
 

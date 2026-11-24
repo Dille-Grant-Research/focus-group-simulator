@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from api.config import Settings, build_llm_provider, get_settings
+from focus_group.llm.base import BaseLLMProvider
 from focus_group.llm.ollama import OllamaConnectionError
 from focus_group.llm.openai_compat import OpenAIConnectionError
 
@@ -128,7 +129,14 @@ async def generate_session_params(
     settings: Settings = Depends(get_settings),
 ) -> GenerateResponse:
     provider = build_llm_provider(settings)
+    try:
+        return await _generate_params(provider, body)
+    finally:
+        await provider.aclose()
 
+
+async def _generate_params(provider: BaseLLMProvider, body: GenerateRequest) -> GenerateResponse:
+    """Run the two generation calls and parse them into a GenerateResponse."""
     # ── Call 1: demographics + session meta ──────────────────────────────────
     demo_prompt = _demographics_prompt(body.research_topic, body.num_participants)
     try:

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from api.config import Settings, build_llm_provider
 from api.database import delete_expired_jobs, get_db, get_next_queued_job, update_job
 from focus_group.core.session import FocusGroupSession
+from focus_group.llm.base import BaseLLMProvider
 from focus_group.models.config import SessionConfig
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
 
             job_id: str = job["job_id"]
             logger.info("Starting job %s", job_id)
+            provider: BaseLLMProvider | None = None
 
             try:
                 await update_job(db, job_id, status="running", started_at=_utcnow())
@@ -102,6 +104,10 @@ async def job_worker(settings: Settings, stop_event: asyncio.Event) -> None:
             except Exception as exc:
                 logger.exception("Job %s failed", job_id)
                 await update_job(db, job_id, status="failed", error_message=str(exc))
+
+            finally:
+                if provider is not None:
+                    await provider.aclose()
 
         iteration += 1
 
