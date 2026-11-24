@@ -21,15 +21,14 @@ from pydantic import BaseModel
 
 from api.config import Settings, get_settings
 from api.database import (
-    count_user_jobs_in_window,
-    create_job,
+    create_job_within_limit,
     get_db,
     get_job,
     get_job_by_idempotency_key,
     get_queue_position,
     list_user_jobs,
 )
-from api.middleware.rate_limit import check_rate_limit
+from api.middleware.rate_limit import RATE_LIMIT_WINDOW_HOURS, rate_limit_exceeded
 from focus_group.models.config import SessionConfig
 
 logger = logging.getLogger(__name__)
@@ -125,18 +124,20 @@ async def submit_job(
             estimated_position=position,
         )
 
-    await check_rate_limit(db, user_id, settings)
-
     job_id = str(uuid4())
     expires_at = (datetime.now(timezone.utc) + timedelta(days=_JOB_RETENTION_DAYS)).isoformat()
-    await create_job(
+    created = await create_job_within_limit(
         db,
         job_id=job_id,
         user_id=user_id,
         config_json=config_json,
         idempotency_key=idempotency_key,
         expires_at=expires_at,
+        limit=settings.MAX_JOBS_PER_HOUR,
+        window_hours=RATE_LIMIT_WINDOW_HOURS,
     )
+    if not created:
+        raise rate_limit_exceeded(settings)
     position = await get_queue_position(db, job_id)
     return JobSubmitResponse(job_id=job_id, status="queued", estimated_position=position)
 

@@ -6,14 +6,17 @@ result retrieval (pending + completed), delete, and list.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
 
+from api import database
 from api.config import get_settings
 from api.database import delete_expired_jobs, get_db, get_job, update_job
+from api.middleware import rate_limit
 from tests.api.helpers import _MINIMAL_JOB_CONFIG, _TEST_USER_A, _TEST_USER_B, session_headers
 
 
@@ -145,6 +148,94 @@ async def test_rate_limit_is_per_user(client: AsyncClient) -> None:
 _OUTSIDE_RATE_WINDOW = timedelta(hours=2)
 _OUTSIDE_IDEMPOTENCY_WINDOW = timedelta(minutes=11)
 _PAST_EXPIRY = timedelta(hours=1)
+
+
+_QUOTA = 3  # MAX_JOBS_PER_HOUR in test settings
+_BARRIER_TIMEOUT_SECONDS = 0.2
+
+
+def _install_count_barrier(monkeypatch: pytest.MonkeyPatch, expected_arrivals: int) -> None:
+    """Hold each rate-limit count until all requests have counted (or a short timeout).
+
+    Pre-fix, every request counts before any inserts, so all pass the check. Post-fix, the
+    count runs inside the write transaction: the first request times out waiting, and the
+    others are blocked on BEGIN IMMEDIATE, so they run one at a time.
+    """
+    real_count = database.count_user_jobs_in_window
+    arrivals = 0
+    all_arrived = asyncio.Event()
+
+    async def counting_with_barrier(*args: object, **kwargs: object) -> int:
+        nonlocal arrivals
+        count = await real_count(*args, **kwargs)
+        arrivals += 1
+        if arrivals >= expected_arrivals:
+            all_arrived.set()
+        try:
+            await asyncio.wait_for(all_arrived.wait(), timeout=_BARRIER_TIMEOUT_SECONDS)
+        except TimeoutError:
+            pass
+        return count
+
+    monkeypatch.setattr(database, "count_user_jobs_in_window", counting_with_barrier)
+    monkeypatch.setattr(
+        rate_limit, "count_user_jobs_in_window", counting_with_barrier, raising=False
+    )
+
+
+async def test_concurrent_submissions_cannot_exceed_rate_limit(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_count_barrier(monkeypatch, 2 * _QUOTA)
+    posts = [
+        client.post(
+            "/api/v1/jobs",
+            json=_config(session_name=f"race-{i}"),
+            headers=session_headers(_TEST_USER_A),
+        )
+        for i in range(2 * _QUOTA)
+    ]
+    statuses = sorted(r.status_code for r in await asyncio.gather(*posts))
+
+    assert statuses == [202] * _QUOTA + [429] * _QUOTA
+
+
+async def test_concurrent_submissions_from_two_users_each_get_full_quota(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_count_barrier(monkeypatch, 2 * _QUOTA)
+    posts = [
+        client.post(
+            "/api/v1/jobs",
+            json=_config(session_name=f"{label}-{i}"),
+            headers=session_headers(user),
+        )
+        for label, user in (("a", _TEST_USER_A), ("b", _TEST_USER_B))
+        for i in range(_QUOTA)
+    ]
+    responses = await asyncio.gather(*posts)
+
+    assert [r.status_code for r in responses] == [202] * (2 * _QUOTA)
+
+
+async def test_duplicate_submission_at_limit_returns_existing_job(client: AsyncClient) -> None:
+    first_ids = []
+    for i in range(_QUOTA):
+        resp = await client.post(
+            "/api/v1/jobs",
+            json=_config(session_name=f"dup-{i}"),
+            headers=session_headers(_TEST_USER_A),
+        )
+        first_ids.append(resp.json()["job_id"])
+
+    resp = await client.post(
+        "/api/v1/jobs",
+        json=_config(session_name="dup-0"),
+        headers=session_headers(_TEST_USER_A),
+    )
+
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == first_ids[0]
 
 
 def _iso_ago(delta: timedelta) -> str:

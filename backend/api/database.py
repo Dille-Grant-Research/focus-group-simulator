@@ -158,6 +158,42 @@ async def create_job(
     await db.commit()
 
 
+async def create_job_within_limit(
+    db: aiosqlite.Connection,
+    *,
+    job_id: str,
+    user_id: str,
+    config_json: str,
+    idempotency_key: str,
+    expires_at: str,
+    limit: int,
+    window_hours: int,
+) -> bool:
+    """Insert a queued job unless the user is at the limit; the count and insert are atomic.
+
+    BEGIN IMMEDIATE takes SQLite's write lock before counting, so concurrent submissions
+    are serialized. Returns True when inserted, False (nothing written) at the limit.
+    """
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        if await count_user_jobs_in_window(db, user_id, hours=window_hours) >= limit:
+            await db.rollback()
+            return False
+        await db.execute(
+            """
+            INSERT INTO jobs
+                (job_id, user_id, status, config_json, idempotency_key, created_at, expires_at)
+            VALUES (?, ?, 'queued', ?, ?, ?, ?)
+            """,
+            (job_id, user_id, config_json, idempotency_key, _utcnow(), expires_at),
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise
+    return True
+
+
 async def update_job(db: aiosqlite.Connection, job_id: str, **fields: object) -> None:
     """Update arbitrary columns on a job row. Field names must be valid column names."""
     if not fields:
