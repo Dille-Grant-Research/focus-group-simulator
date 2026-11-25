@@ -105,9 +105,9 @@ After a successful login, the backend sets a single `session` cookie:
 | `Secure` | Yes — HTTPS only |
 | `SameSite` | `Lax` — sent on same-site requests and top-level cross-site navigations (GET) |
 | `Path` | `/` — sent on all requests to the backend |
-| Max age | 8 hours (28,800 seconds) |
+| Max age | `SESSION_MAX_AGE_HOURS` (default 12 hours, 43,200 seconds) |
 
-The cookie is signed using `SESSION_SECRET_KEY`. If the signature is invalid or the cookie has expired, the backend returns `401 UNAUTHENTICATED`.
+The cookie is signed using `SESSION_SECRET_KEY`. The session lasts `SESSION_MAX_AGE_HOURS` (default 12 hours). If the signature is invalid or the cookie has expired, the backend returns `401 UNAUTHENTICATED`.
 
 ---
 
@@ -150,10 +150,10 @@ HTTP 401 → redirect to /api/v1/auth/login
 ### Logout
 
 ```
-GET /api/v1/auth/logout
+POST /api/v1/auth/logout
 ```
 
-The backend deletes the session cookie and redirects the browser to `FRONTEND_URL`. No request body is required.
+The backend revokes every session issued to the user so far (on all devices), deletes the session cookie and responds `303` to `FRONTEND_URL`. No request body is required. Use a `POST` form or `fetch`; `GET` returns `405`. A later login issues a fresh, valid session.
 
 ---
 
@@ -166,9 +166,9 @@ The following paths do **not** require authentication and will never return `401
 | `/api/v1/auth/*` | Login, callback, logout |
 | `/health` | Docker health check |
 | `/metrics` | Operational metrics |
-| `/docs` | OpenAPI documentation UI |
-| `/redoc` | ReDoc documentation UI |
-| `/openapi.json` | OpenAPI schema |
+| `/docs` | OpenAPI documentation UI (404 unless `API_DOCS_ENABLED=true`) |
+| `/redoc` | ReDoc documentation UI (404 unless `API_DOCS_ENABLED=true`) |
+| `/openapi.json` | OpenAPI schema (404 unless `API_DOCS_ENABLED=true`) |
 
 ---
 
@@ -178,5 +178,5 @@ The following paths do **not** require authentication and will never return `401
 |---------|-------------|-----|
 | All API requests return `401` immediately after deploy | `SESSION_SECRET_KEY` not set or changed | Verify `SESSION_SECRET_KEY` in `.env` is non-empty and consistent across restarts |
 | Login redirects to Entra but callback returns to frontend with `auth_error` | Redirect URI mismatch | Ensure `ENTRA_REDIRECT_URI` in `.env` exactly matches the URI registered in Entra |
-| `401` after 8 hours | Session cookie expired (by design) | This is expected behavior — the user must log in again |
+| `401` after `SESSION_MAX_AGE_HOURS` (default 12 hours) | Session cookie expired (by design) | This is expected behavior — the user must log in again |
 | Login works locally but not in production | HTTP vs HTTPS cookie | The `Secure` flag requires HTTPS in production; the server must be behind TLS |

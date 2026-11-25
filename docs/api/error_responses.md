@@ -54,7 +54,7 @@ Every error response has this shape:
 
 ### 401 — UNAUTHENTICATED
 
-**When:** The `session` cookie is missing, expired, or has an invalid signature.
+**When:** The `session` cookie is missing, expired, has an invalid signature, or was signed out (session revoked by logout). A signed-out session returns the message "Session was signed out. Please log in again."
 
 **Response:**
 ```json
@@ -195,7 +195,7 @@ Every error response has this shape:
 
 ### 429 — RATE_LIMIT_EXCEEDED
 
-**When:** The user has submitted `MAX_JOBS_PER_HOUR` or more jobs in the past hour (default: 5). Duplicate submissions that hit the idempotency check do not count toward this limit.
+**When:** The user has submitted `MAX_JOBS_PER_HOUR` or more jobs in the past hour (default: 5). Every accepted submission in the last hour counts, including jobs later deleted or failed. Duplicate submissions that hit the idempotency check do not count toward this limit.
 
 **Response:**
 ```json
@@ -224,7 +224,7 @@ Every error response has this shape:
 {
   "error": {
     "code": "INTERNAL_ERROR",
-    "message": "An unexpected error occurred. Please try again.",
+    "message": "An unexpected error occurred.",
     "details": {}
   }
 }
@@ -236,20 +236,20 @@ Every error response has this shape:
 
 ### 503 — SERVICE_UNAVAILABLE
 
-**When:** The `/health` check detects that a critical component (database, worker, or Ollama) is down, **or** a job submission is attempted while the service is degraded.
+**When:** `POST /api/v1/generate` cannot reach the inference server. (`GET /health` also returns HTTP 503 when a component is down, but with its own body: `status: "degraded"` and a `components` map. See endpoints.md.) Job submission does not return 503: jobs queue normally and a job that cannot reach the inference server ends as `failed`.
 
 **Response:**
 ```json
 {
   "error": {
     "code": "SERVICE_UNAVAILABLE",
-    "message": "The simulation service is temporarily unavailable.",
+    "message": "Inference service is not reachable. Try again in a moment.",
     "details": {}
   }
 }
 ```
 
-**Recommended handling:** Show a maintenance banner. Retry the operation after a delay (suggest 60 seconds). If the error persists, contact IT — it usually means the GPU machine is unreachable (`ollama` component down) or the Docker container crashed (`worker` component dead).
+**Recommended handling:** Show a maintenance banner. Retry the operation after a delay (suggest 60 seconds). If the error persists, contact IT — it usually means the inference server is unreachable (`llm` component `unreachable` in `/health`) or the Docker container crashed (`worker` component `dead`).
 
 ---
 

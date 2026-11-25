@@ -18,7 +18,7 @@ The simulator's core contributions are:
 
 - **Anti-sycophancy enforcement** — Participants maintain independent stances. A real-time stance tracking system (`StanceMatrix`) detects and prevents artificial consensus drift.
 - **Three-tier memory architecture** — Each participant maintains episodic identity memory, cross-question stance memory, and a rolling working memory window — producing contextually coherent, persona-consistent responses across long discussions.
-- **LLM-agnostic inference** — The simulation engine is decoupled from any specific model provider, supporting local inference via Ollama and cloud providers (OpenAI, Anthropic) through a common interface.
+- **LLM-agnostic inference** — The simulation engine is decoupled from any specific model provider, supporting Ollama and any OpenAI-compatible server (such as MSUM's LM Studio inference host, "cruncher") through a common interface.
 - **Structured research output** — Every session produces a full transcript, per-turn non-verbal reactions, a stance matrix, and a `ResearchAssistant` analysis of themes, consensus levels, and notable interaction dynamics.
 
 ---

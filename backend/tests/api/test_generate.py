@@ -8,9 +8,15 @@ import pytest
 from httpx import AsyncClient
 
 from focus_group.llm.ollama import OllamaConnectionError
-from tests.api.helpers import _TEST_USER_A, session_cookies
+from focus_group.llm.openai_compat import OpenAIConnectionError
+from focus_group.models.config import (
+    MAX_DEMOGRAPHIC_CHARS,
+    MAX_PURPOSE_CHARS,
+    MAX_QUESTION_CHARS,
+    MAX_SESSION_NAME_CHARS,
+)
+from tests.api.helpers import _TEST_USER_A, session_headers
 from tests.mocks.mock_provider import MockLLMProvider, SequentialMockProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,19 +43,19 @@ _QUESTIONS_JSON = json.dumps([
 
 
 def _make_provider(monkeypatch, responses: list[str]) -> None:
-    """Patch _build_provider in the generate route to return a sequential mock."""
+    """Patch build_llm_provider in the generate route to return a sequential mock."""
     provider = SequentialMockProvider(responses=responses, loop=False)
-    monkeypatch.setattr("api.routes.generate._build_provider", lambda _settings: provider)
+    monkeypatch.setattr("api.routes.generate.build_llm_provider", lambda _settings: provider)
 
 
-def _make_error_provider(monkeypatch) -> None:
-    """Patch _build_provider to raise OllamaConnectionError on generate."""
+def _make_error_provider(monkeypatch, error_type: type[Exception]) -> None:
+    """Patch build_llm_provider to raise the given connection error on generate."""
     class _ErrorProvider(MockLLMProvider):
         async def generate(self, prompt: str, system_prompt=None) -> str:  # type: ignore[override]
-            raise OllamaConnectionError("test: connection refused")
+            raise error_type("test: connection refused")
 
     monkeypatch.setattr(
-        "api.routes.generate._build_provider", lambda _settings: _ErrorProvider()
+        "api.routes.generate.build_llm_provider", lambda _settings: _ErrorProvider()
     )
 
 
@@ -64,7 +70,7 @@ async def test_generate_success(client: AsyncClient, monkeypatch) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 200
@@ -89,7 +95,7 @@ async def test_generate_custom_counts(client: AsyncClient, monkeypatch) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 2, "num_questions": 2},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 200
@@ -120,7 +126,7 @@ async def test_generate_missing_topic_returns_422(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": ""},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -129,7 +135,7 @@ async def test_generate_topic_too_long_returns_422(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": "x" * 501},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -138,7 +144,7 @@ async def test_generate_num_participants_zero_returns_422(client: AsyncClient) -
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 0},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -147,7 +153,7 @@ async def test_generate_num_participants_too_many_returns_422(client: AsyncClien
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_participants": 16},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -156,7 +162,7 @@ async def test_generate_num_questions_zero_returns_422(client: AsyncClient) -> N
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_questions": 0},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
@@ -165,25 +171,26 @@ async def test_generate_num_questions_too_many_returns_422(client: AsyncClient) 
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC, "num_questions": 21},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
     assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
-# Ollama unavailable
+# Inference service unavailable
 # ---------------------------------------------------------------------------
 
 
-async def test_generate_ollama_unreachable_returns_503(
-    client: AsyncClient, monkeypatch
+@pytest.mark.parametrize("error_type", [OllamaConnectionError, OpenAIConnectionError])
+async def test_generate_llm_unreachable_returns_503(
+    client: AsyncClient, monkeypatch, error_type: type[Exception]
 ) -> None:
-    _make_error_provider(monkeypatch)
+    _make_error_provider(monkeypatch, error_type)
 
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 503
@@ -203,7 +210,7 @@ async def test_generate_bad_demographics_json_returns_500(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 500
@@ -218,8 +225,71 @@ async def test_generate_bad_questions_json_returns_500(
     resp = await client.post(
         "/api/v1/generate",
         json={"research_topic": _VALID_TOPIC},
-        cookies=session_cookies(_TEST_USER_A),
+        headers=session_headers(_TEST_USER_A),
     )
 
     assert resp.status_code == 500
     assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Provider lifecycle
+# ---------------------------------------------------------------------------
+
+
+class _ClosingTracker(SequentialMockProvider):
+    """Sequential mock that records whether the route closed it."""
+
+    closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_status"),
+    [
+        pytest.param([_DEMOGRAPHICS_JSON, _QUESTIONS_JSON], 200, id="success"),
+        pytest.param(["not json"], 500, id="parse-failure"),
+    ],
+)
+async def test_generate_closes_provider(
+    client: AsyncClient, monkeypatch, responses: list[str], expected_status: int
+) -> None:
+    provider = _ClosingTracker(responses=responses, loop=False)
+    monkeypatch.setattr("api.routes.generate.build_llm_provider", lambda _settings: provider)
+
+    resp = await client.post(
+        "/api/v1/generate",
+        json={"research_topic": _VALID_TOPIC},
+        headers=session_headers(_TEST_USER_A),
+    )
+
+    assert resp.status_code == expected_status
+    assert provider.closed is True
+
+
+async def test_generate_clips_values_to_session_config_caps(
+    client: AsyncClient, monkeypatch
+) -> None:
+    overshoot = 50
+    demographics_json = json.dumps({
+        "session_name": "n" * (MAX_SESSION_NAME_CHARS + overshoot),
+        "purpose": "p" * (MAX_PURPOSE_CHARS + overshoot),
+        "demographics": ["d" * (MAX_DEMOGRAPHIC_CHARS + overshoot)],
+    })
+    questions_json = json.dumps(["q" * (MAX_QUESTION_CHARS + overshoot)])
+    _make_provider(monkeypatch, [demographics_json, questions_json])
+
+    resp = await client.post(
+        "/api/v1/generate",
+        json={"research_topic": _VALID_TOPIC},
+        headers=session_headers(_TEST_USER_A),
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["session_name"]) == MAX_SESSION_NAME_CHARS
+    assert len(data["purpose"]) == MAX_PURPOSE_CHARS
+    assert [len(d) for d in data["demographics"]] == [MAX_DEMOGRAPHIC_CHARS]
+    assert [len(q) for q in data["questions"]] == [MAX_QUESTION_CHARS]

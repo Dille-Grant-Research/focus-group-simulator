@@ -262,3 +262,41 @@ class TestMemorySerialization:
         assert dumped["consensus_level"] == "moderate"
         assert dumped["key_themes"] == ["agreement", "collaboration"]
         assert dumped["turn_count"] == 3
+
+
+# =============================================================================
+# NON-VERBAL FRAMING
+# =============================================================================
+
+_OWN_REACTION = "frowns slightly"
+_MISLEADING_PHRASES = ("can see in the room", "BODY LANGUAGE YOU CAN SEE")
+
+
+class TestOwnReactionFraming:
+    """A participant's context holds only their OWN reactions; prompts must say so."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_memory", [False, True], ids=["legacy", "memory"])
+    async def test_bracketed_reactions_described_as_own(
+        self, persona: Persona, provider: MockLLMProvider, with_memory: bool
+    ) -> None:
+        from focus_group.models.message import Message
+
+        participant = Participant(persona=persona, provider=provider)
+        participant.add_nonverbal_message(Message.nonverbal(_OWN_REACTION, participant.name))
+        matrix = None
+        if with_memory:
+            participant.init_memory(focus_group_topic="Testing")
+            participant.memory_on_new_question("What about tests?", 0)
+            matrix = StanceMatrix()
+
+        await ResponseGenerator(provider).generate_response(
+            participant, "Test prompt", stance_matrix=matrix
+        )
+
+        call = provider.get_last_call()
+        text = f"{call['system_prompt']}\n{call['prompt']}"
+        assert _OWN_REACTION in call["prompt"]
+        for phrase in _MISLEADING_PHRASES:
+            assert phrase not in text
+        assert "your own" in text.lower()

@@ -7,6 +7,10 @@ as a regular Python module in all pytest configurations).
 
 from __future__ import annotations
 
+import time
+from datetime import timedelta
+from unittest.mock import patch
+
 _TEST_SECRET = "test-session-secret-key-abc123xyz"
 _TEST_USER_A = "oid-test-user-aaaa-0001"
 _TEST_USER_B = "oid-test-user-bbbb-0002"
@@ -20,16 +24,34 @@ _MINIMAL_JOB_CONFIG: dict = {
 }
 
 
-def make_session_cookie(user_id: str) -> str:
-    """Return a signed session cookie value for the given user."""
+def make_session_cookie(user_id: str, issued_ago: timedelta = timedelta(0)) -> str:
+    """Return a signed session cookie value for the given user.
+
+    issued_ago back-dates the signing timestamp; a negative value issues it in the future.
+    """
     from itsdangerous import URLSafeTimedSerializer
 
-    return URLSafeTimedSerializer(_TEST_SECRET, salt="session").dumps({"user_id": user_id})
+    serializer = URLSafeTimedSerializer(_TEST_SECRET, salt="session")
+    if not issued_ago:
+        return serializer.dumps({"user_id": user_id})
+    issued_at = time.time() - issued_ago.total_seconds()
+    with patch("itsdangerous.timed.time.time", return_value=issued_at):
+        return serializer.dumps({"user_id": user_id})
 
 
 def session_cookies(user_id: str) -> dict[str, str]:
     """Return a cookies dict suitable for authenticated requests."""
     return {"session": make_session_cookie(user_id)}
+
+
+def cookie_header(cookies: dict[str, str]) -> dict[str, str]:
+    """Send cookies as a Cookie header. httpx deprecates per-request cookies=."""
+    return {"Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())}
+
+
+def session_headers(user_id: str) -> dict[str, str]:
+    """Return headers carrying a valid session cookie for the given user."""
+    return cookie_header(session_cookies(user_id))
 
 
 def make_flow_cookie(flow: dict) -> str:

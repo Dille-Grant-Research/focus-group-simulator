@@ -1,9 +1,32 @@
 """Configuration models for the focus group simulator."""
 
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+
+# Concurrent chat completions per provider. LM Studio on cruncher shares one
+# context pool across all in-flight requests, so this is kept small by default.
+DEFAULT_MAX_PARALLEL_REQUESTS = 4
+
+# Character caps on SessionConfig text fields. These bound what a submitted job
+# can make the server store and feed to the LLM.
+MAX_DEMOGRAPHIC_CHARS = 300
+MAX_PARTICIPANT_NAME_CHARS = 100
+MAX_QUESTION_CHARS = 1000  # applies to questions[] and closing_question
+MAX_PURPOSE_CHARS = 2000
+MAX_SESSION_NAME_CHARS = 200
+
+
+class GroupDynamic(str, Enum):
+    """Preset that sets how the session's participants tend to engage.
+
+    Each preset maps to stance weights in focus_group.persona.stance_distribution.
+    """
+
+    NATURAL = "natural"
+    COOPERATIVE = "cooperative"
+    HEATED = "heated"
 
 
 class LLMProviderType(str, Enum):
@@ -47,6 +70,16 @@ class OllamaModelConfig(BaseModel):
         ge=0.0,
         le=1.0,
     )
+    max_tokens: int | None = Field(
+        default=None,
+        description="Maximum tokens in the response (sent as num_predict). None = model default.",
+        ge=1,
+        le=32768,
+    )
+    seed: int | None = Field(
+        default=None,
+        description="Sampling seed for reproducible output. Sent only when set.",
+    )
 
 
 class CloudModelConfig(BaseModel):
@@ -58,8 +91,12 @@ class CloudModelConfig(BaseModel):
     model_name: str = Field(
         description="Name of the model to use",
     )
-    api_key_env_var: str = Field(
-        description="Name of environment variable containing the API key",
+    api_key_env_var: str | None = Field(
+        default=None,
+        description=(
+            "Name of environment variable containing the API key. "
+            "None for unauthenticated endpoints (e.g. a self-hosted LM Studio server)."
+        ),
     )
     base_url: str = Field(
         default="https://api.openai.com",
@@ -89,34 +126,26 @@ class CloudModelConfig(BaseModel):
         ge=1024,
         le=131072,
     )
-
-
-class ModelConfig(BaseModel):
-    """Combined model configuration with primary and optional fallback."""
-
-    primary: OllamaModelConfig = Field(
-        default_factory=OllamaModelConfig,
-        description="Primary model configuration (Ollama)",
+    request_timeout_seconds: float = Field(
+        default=120.0,
+        description="Per-request HTTP timeout for chat completions",
+        gt=0,
     )
-    fallback: CloudModelConfig | None = Field(
+    reasoning_effort: str | None = Field(
         default=None,
-        description="Optional fallback cloud model configuration",
+        description=(
+            "Sent as `reasoning_effort` when set. Use 'none' for reasoning models on "
+            "LM Studio, otherwise reasoning can consume max_tokens and leave content empty."
+        ),
     )
-    use_fallback_on_error: bool = Field(
-        default=True,
-        description="Whether to use fallback model when primary fails",
+    seed: int | None = Field(
+        default=None,
+        description="Sampling seed for reproducible output. Sent only when set.",
     )
-    max_retries: int = Field(
-        default=3,
-        description="Maximum number of retry attempts",
-        ge=0,
-        le=10,
-    )
-    retry_delay_seconds: float = Field(
-        default=1.0,
-        description="Initial delay between retries (exponential backoff)",
-        ge=0.1,
-        le=60.0,
+    max_parallel_requests: int = Field(
+        default=DEFAULT_MAX_PARALLEL_REQUESTS,
+        description="Maximum chat completions in flight at once from this provider",
+        ge=1,
     )
 
 
@@ -215,26 +244,30 @@ class SessionConfig(BaseModel):
     for running a focus group simulation.
     """
 
-    demographics: list[str] = Field(
+    demographics: list[Annotated[str, StringConstraints(max_length=MAX_DEMOGRAPHIC_CHARS)]] = Field(
         description="List of demographic specifications for participants",
         min_length=1,
         max_length=15,
     )
-    participant_names: list[str | None] | None = Field(
+    participant_names: (
+        list[Annotated[str, StringConstraints(max_length=MAX_PARTICIPANT_NAME_CHARS)] | None] | None
+    ) = Field(
         default=None,
         description="Optional name overrides per participant, parallel to demographics. None entries = autogenerate.",
         max_length=15,
     )
-    questions: list[str] = Field(
+    questions: list[Annotated[str, StringConstraints(max_length=MAX_QUESTION_CHARS)]] = Field(
         description="List of focus group questions to discuss (in order)",
         min_length=1,
         max_length=20,
     )
     purpose: str | None = Field(
         default=None,
+        max_length=MAX_PURPOSE_CHARS,
         description="Optional introductory statement/purpose for the focus group",
     )
     closing_question: str = Field(
+        max_length=MAX_QUESTION_CHARS,
         default="Do you have any concluding thoughts about participating in this focus group?",
         description="The closing question to ask at the end",
     )
@@ -242,6 +275,15 @@ class SessionConfig(BaseModel):
         default_factory=OllamaModelConfig,
         description="Model configuration for the LLM provider",
     )
+
+    @field_validator("participant_names")
+    @classmethod
+    def _names_unique(cls, names: list[str | None] | None) -> list[str | None] | None:
+        """Reject repeated names: the session tracks speakers by name."""
+        given = [n.strip().casefold() for n in names or [] if n and n.strip()]
+        if len(given) != len(set(given)):
+            raise ValueError("participant_names must be unique (ignoring case and spaces)")
+        return names
 
     @model_validator(mode="before")
     @classmethod
@@ -269,6 +311,14 @@ class SessionConfig(BaseModel):
         default=True,
         description="Whether to validate generated personas",
     )
+    group_dynamic: GroupDynamic = Field(
+        default=GroupDynamic.NATURAL,
+        description=(
+            "How participants tend to engage: 'natural' (a realistic mix), 'cooperative' "
+            "or 'heated'. Each participant's discussion stance is drawn from this preset's "
+            "distribution, seeded by the job seed."
+        ),
+    )
     exclude_nonverbals: bool = Field(
         default=True,
         description="Strip non-verbal reactions from the stored result. "
@@ -276,5 +326,6 @@ class SessionConfig(BaseModel):
     )
     session_name: str | None = Field(
         default=None,
+        max_length=MAX_SESSION_NAME_CHARS,
         description="Optional name for the session (used in output filenames)",
     )

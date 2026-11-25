@@ -1,6 +1,10 @@
-"""Step 27: Live AI smoke test — persona generation.
+"""Live AI smoke test — persona generation.
 
-Requires Ollama running with the configured model loaded.
+Uses the same settings and provider as the job worker: LLM_PROVIDER, LLM_BASE_URL,
+LLM_MODEL, LLM_REASONING_EFFORT etc. from backend/.env (e.g. cruncher via the SSH
+tunnel at http://localhost:1234). Settings reads .env itself, so nothing leaks into
+os.environ for the rest of the test run.
+
 Gate: --run-ollama flag (never fires in CI or make test-all).
 
 Run with:
@@ -11,15 +15,9 @@ Run with:
 
 from __future__ import annotations
 
-import os
-
 import pytest
-from dotenv import load_dotenv
 
-load_dotenv()
-
-from focus_group.llm.ollama import OllamaProvider
-from focus_group.models.config import OllamaModelConfig
+from api.config import Settings, build_llm_provider
 from focus_group.persona.generator import PersonaGenerator
 
 _SMOKE_DEMOGRAPHIC = "Female, age 38, rural Minnesota, registered nurse"
@@ -32,21 +30,16 @@ async def test_first_persona_generated() -> None:
     Exits as soon as the first persona is confirmed — does not run
     the full simulation.
     """
-    host = os.environ.get("OLLAMA_HOST")
-    port = int(os.environ.get("OLLAMA_PORT"))
-    model = os.environ.get("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
-
-    config = OllamaModelConfig(
-        model_name=model,
-        base_url=f"http://{host}:{port}",
-    )
-    provider = OllamaProvider(config)
+    settings = Settings()
+    provider = build_llm_provider(settings)
 
     if not await provider.is_available():
-        pytest.skip(f"Ollama not reachable at http://{host}:{port}")
+        pytest.skip(f"{settings.LLM_MODEL} not reachable at {settings.llm_base_url}")
 
-    generator = PersonaGenerator(provider)
-    persona = await generator.generate_persona(_SMOKE_DEMOGRAPHIC)
+    try:
+        persona = await PersonaGenerator(provider).generate_persona(_SMOKE_DEMOGRAPHIC)
+    finally:
+        await provider.aclose()
 
     assert persona.name, "persona.name must be non-empty"
     assert isinstance(persona.age, int) and 18 <= persona.age <= 100, (

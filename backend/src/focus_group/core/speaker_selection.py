@@ -5,10 +5,59 @@ based on non-verbal reactions and group dynamics.
 """
 
 import json
+import logging
 import re
+from typing import Any
 
 from focus_group.core.participant import Participant
 from focus_group.llm.base import BaseLLMProvider
+
+logger = logging.getLogger(__name__)
+
+_NO_REASONING = "No reasoning provided"
+_NOBODY_VALUES = ("null", "none")
+_LOGGED_REPLY_CHARS = 200
+
+
+def _extract_json_object(response: str) -> dict[str, Any] | None:
+    """Return the first flat JSON object in the reply, or None if there isn't one."""
+    match = re.search(r"\{[^}]+\}", response, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group())
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _str_field(data: dict[str, Any], key: str) -> str:
+    """Return data[key] stripped if it is a string, else "" (handles null / numbers)."""
+    value = data.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _selection_schema(names: list[str], *, allow_nobody: bool) -> dict[str, Any]:
+    """JSON Schema for a selection reply, with `selected` limited to the given names.
+
+    allow_nobody adds `someone_wants_to_speak` and lets `selected` be null.
+    """
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    if allow_nobody:
+        properties["someone_wants_to_speak"] = {"type": "boolean"}
+        required.append("someone_wants_to_speak")
+        properties["selected"] = {"enum": [*names, None]}
+    else:
+        properties["selected"] = {"type": "string", "enum": list(names)}
+    properties["reasoning"] = {"type": "string"}
+    required += ["selected", "reasoning"]
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
 
 
 class SpeakerSelectionResult:
@@ -126,6 +175,9 @@ class FirstSpeakerSelector:
         response = await self._provider.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
+            json_schema=_selection_schema(
+                [p.name for p in participants], allow_nobody=False
+            ),
         )
 
         # Parse the response to get selected participant
@@ -239,22 +291,20 @@ Remember to respond in JSON format with "selected" and "reasoning" fields."""
         Raises:
             ValueError: If response cannot be parsed or contains invalid participant
         """
-        # Try to parse as JSON
-        try:
-            # Find JSON object in response (may have surrounding text)
-            json_match = re.search(r"\{[^}]+\}", response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                selected = data.get("selected", "").strip()
-                reasoning = data.get("reasoning", "No reasoning provided").strip()
+        data = _extract_json_object(response)
+        if data is not None:
+            selected = _str_field(data, "selected")
+            reasoning = _str_field(data, "reasoning") or _NO_REASONING
+            if selected:
+                # Verify the selected name matches a participant
+                matched_name = self._match_participant_name(selected, participants)
+                if matched_name:
+                    return matched_name, reasoning
 
-                if selected:
-                    # Verify the selected name matches a participant
-                    matched_name = self._match_participant_name(selected, participants)
-                    if matched_name:
-                        return matched_name, reasoning
-        except json.JSONDecodeError:
-            pass
+        logger.warning(
+            "First-speaker selection could not use the LLM reply, falling back: %r",
+            response[:_LOGGED_REPLY_CHARS],
+        )
 
         # Fallback: try to find a participant name mentioned in the response
         for p in participants:
@@ -428,6 +478,9 @@ class NextSpeakerSelector:
         response = await self._provider.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
+            json_schema=_selection_schema(
+                [p.name for p in eligible_participants], allow_nobody=True
+            ),
         )
 
         # Parse the response
@@ -485,6 +538,9 @@ class NextSpeakerSelector:
         response = await self._provider.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
+            json_schema=_selection_schema(
+                [p.name for p in eligible_participants], allow_nobody=True
+            ),
         )
 
         return self._parse_selection_response(
@@ -673,26 +729,24 @@ Remember:
         Returns:
             SpeakerSelectionResult if someone selected, None if no one wants to speak
         """
-        # Try to parse as JSON
-        try:
-            # Find JSON object in response (may have surrounding text)
-            json_match = re.search(r"\{[^}]+\}", response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
+        data = _extract_json_object(response)
+        if data is not None and "someone_wants_to_speak" in data:
+            # An explicit "no one" is a valid answer, not a fallback
+            if not data["someone_wants_to_speak"]:
+                return None
 
-                # Check if anyone wants to speak
-                wants_to_speak = data.get("someone_wants_to_speak", False)
-                if not wants_to_speak:
-                    return None
+            raw_selected = data.get("selected")
+            if raw_selected is None or (
+                isinstance(raw_selected, str)
+                and raw_selected.strip().lower() in ("", *_NOBODY_VALUES)
+            ):
+                return None
 
-                selected = data.get("selected")
-                if not selected or selected == "null" or selected.lower() == "none":
-                    return None
+            selected = _str_field(data, "selected")
+            reasoning = _str_field(data, "reasoning") or _NO_REASONING
 
-                selected = str(selected).strip()
-                reasoning = data.get("reasoning", "No reasoning provided").strip()
-
-                # Verify the selected name matches an eligible participant
+            # Verify the selected name matches an eligible participant
+            if selected:
                 matched_name = self._match_participant_name(selected, eligible_participants)
                 if matched_name:
                     participant = self._find_participant_by_name(
@@ -702,8 +756,11 @@ Remember:
                         participant=participant,
                         reasoning=reasoning,
                     )
-        except json.JSONDecodeError:
-            pass
+
+        logger.warning(
+            "Next-speaker selection could not use the LLM reply, falling back: %r",
+            response[:_LOGGED_REPLY_CHARS],
+        )
 
         # Fallback: check if response clearly indicates no one wants to speak
         response_lower = response.lower()
@@ -897,6 +954,7 @@ class SilenceHandler:
         response = await self._provider.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
+            json_schema=_selection_schema([p.name for p in not_spoken], allow_nobody=False),
         )
 
         # Parse the response to get selected participant
@@ -1009,22 +1067,20 @@ You MUST select one of these participants. Respond in JSON format with "selected
         Returns:
             Tuple of (selected_name, reasoning)
         """
-        # Try to parse as JSON
-        try:
-            # Find JSON object in response (may have surrounding text)
-            json_match = re.search(r"\{[^}]+\}", response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                selected = data.get("selected", "").strip()
-                reasoning = data.get("reasoning", "No reasoning provided").strip()
+        data = _extract_json_object(response)
+        if data is not None:
+            selected = _str_field(data, "selected")
+            reasoning = _str_field(data, "reasoning") or _NO_REASONING
+            if selected:
+                # Verify the selected name matches a participant
+                matched_name = self._match_participant_name(selected, not_spoken)
+                if matched_name:
+                    return matched_name, reasoning
 
-                if selected:
-                    # Verify the selected name matches a participant
-                    matched_name = self._match_participant_name(selected, not_spoken)
-                    if matched_name:
-                        return matched_name, reasoning
-        except json.JSONDecodeError:
-            pass
+        logger.warning(
+            "Reluctant-speaker selection could not use the LLM reply, falling back: %r",
+            response[:_LOGGED_REPLY_CHARS],
+        )
 
         # Fallback: try to find a participant name mentioned in the response
         for p in not_spoken:

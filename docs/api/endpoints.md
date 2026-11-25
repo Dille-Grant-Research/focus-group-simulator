@@ -19,7 +19,7 @@ All authenticated endpoints require the signed `session` cookie set by the login
 2. [Auth Endpoints](#2-auth-endpoints)
    - [GET /api/v1/auth/login](#get-apiv1authlogin)
    - [GET /api/v1/auth/callback](#get-apiv1authcallback)
-   - [GET /api/v1/auth/logout](#get-apiv1authlogout)
+   - [POST /api/v1/auth/logout](#post-apiv1authlogout)
 3. [System Endpoints](#3-system-endpoints)
    - [GET /health](#get-health)
    - [GET /metrics](#get-metrics)
@@ -36,7 +36,7 @@ Submit a new focus group simulation for processing.
 
 **Idempotency:** Submitting the same configuration within 10 minutes returns the existing `job_id` instead of creating a new job. This prevents duplicate simulations from double-clicks or retries.
 
-**Rate limit:** `MAX_JOBS_PER_HOUR` submissions per user per rolling hour (default: 5). Duplicate submissions (idempotency hits) do not count against the limit.
+**Rate limit:** `MAX_JOBS_PER_HOUR` submissions per user per rolling hour (default: 5). Every accepted submission in the last hour counts, including jobs later deleted or failed. Duplicate submissions (idempotency hits) do not count against the limit.
 
 #### Request
 
@@ -157,7 +157,7 @@ Cookie: session=<value>
 | `status` | string | `queued`, `running`, `completed`, or `failed` |
 | `created_at` | string | ISO 8601 timestamp — when job was submitted |
 | `started_at` | string or null | ISO 8601 timestamp — when the worker picked it up |
-| `completed_at` | string or null | ISO 8601 timestamp — when simulation finished |
+| `completed_at` | string or null | ISO 8601 timestamp — when the job finished, set for both `completed` and `failed`; null while `queued` or `running` |
 | `expires_at` | string | ISO 8601 timestamp — job and result deleted after this date (30 days) |
 | `queue_position` | integer or null | Position in the queue if `queued`; null otherwise |
 
@@ -234,10 +234,36 @@ Cookie: session=<value>
     "created_at": "2026-05-02T14:00:00Z",
     "started_at": "2026-05-02T14:01:30Z",
     "completed_at": "2026-05-02T14:07:45Z",
-    "expires_at": "2026-06-01T14:00:00Z"
+    "expires_at": "2026-06-01T14:00:00Z",
+    "run": {
+      "provider": "openai",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "params": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 2048,
+        "seed": 1834201977,
+        "reasoning_effort": "none"
+      },
+      "usage": {
+        "calls": 61,
+        "prompt_tokens": 98213,
+        "completion_tokens": 7408,
+        "max_prompt_tokens": 3120
+      },
+      "group_dynamic": "natural",
+      "duration_seconds": 372.4
+    }
   }
 }
 ```
+
+`metadata.run` records what produced the result, so a run can be reported and reproduced:
+the server's provider and model, the sampling settings actually used, the `group_dynamic` preset the
+participants' stances were drawn from (see configuration.md), token usage reported by
+the inference server (`usage` is null if the provider doesn't report it), and wall-clock time.
+Submit the same config with `"model": {"seed": <params.seed>}` to reproduce a run. `run` is null
+for jobs that finished before this field existed.
 
 **Note:** The `result` object contains the raw simulation output. Shape may vary depending on whether memory/stance tracking was enabled in the session config.
 
@@ -350,17 +376,17 @@ The OAuth callback endpoint. Microsoft Entra redirects here after the user authe
 
 ---
 
-### GET /api/v1/auth/logout
+### POST /api/v1/auth/logout
 
-Logs the user out by clearing the session cookie.
+Logs the user out. Every session issued to that user before this call stops working immediately, on all devices, and the session cookie is cleared in this browser.
 
-**Auth required:** No (but has no effect if the user is not logged in)
+**Auth required:** No (a missing, expired or invalid cookie is not an error; there is simply nothing to revoke)
 
 ```
-GET /api/v1/auth/logout
+POST /api/v1/auth/logout
 ```
 
-**Response:** `302` redirect to `FRONTEND_URL` with the session cookie deleted.
+**Response:** `303` redirect to `FRONTEND_URL` with the session cookie deleted. `GET` is not supported and returns `405`. Call it from a form submit or `fetch` with credentials; the 303 makes the browser follow the redirect with `GET`.
 
 ---
 
@@ -380,7 +406,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
   "components": {
     "database": "ok",
     "worker": "alive",
-    "ollama": "reachable"
+    "llm": "reachable"
   },
   "timestamp": "2026-05-02T14:00:00Z"
 }
@@ -394,7 +420,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
   "components": {
     "database": "ok",
     "worker": "alive",
-    "ollama": "unreachable"
+    "llm": "unreachable"
   },
   "timestamp": "2026-05-02T14:00:00Z"
 }
@@ -404,7 +430,7 @@ Deep health check verifying all critical system components. Used by Docker's bui
 |-----------|--------|---------------|
 | `database` | `"ok"` / `"error"` | SQLite responds to `SELECT 1` |
 | `worker` | `"alive"` / `"dead"` | Background job worker task is running |
-| `ollama` | `"reachable"` / `"unreachable"` / `"error"` | `GET http://<OLLAMA_HOST>:<OLLAMA_PORT>/api/tags` returns 200 |
+| `llm` | `"reachable"` / `"unreachable"` / `"error"` | Inference service is up and serves `LLM_MODEL`. `LLM_PROVIDER=openai`: `GET <LLM_BASE_URL>/v1/models` lists the model. `LLM_PROVIDER=ollama`: `GET <LLM_BASE_URL>/api/tags` returns 200 |
 
 Returns `503` if **any** component is not in its healthy state. Returns `200` only when all three are healthy.
 
@@ -424,8 +450,7 @@ Operational statistics for the job queue. Always returns 200.
   "jobs_completed_24h": 7,
   "jobs_failed_24h": 1,
   "avg_duration_seconds": 287.4,
-  "worker_status": "processing",
-  "current_job_id": "3f8a2b1c-e7d4-4a2f-9b1e-0c5d6f7a8b9e"
+  "worker_status": "processing"
 }
 ```
 
@@ -436,4 +461,5 @@ Operational statistics for the job queue. Always returns 200.
 | `jobs_failed_24h` | integer | Jobs that reached `failed` in the last 24 hours |
 | `avg_duration_seconds` | float or null | Average runtime of completed jobs in the last 24 hours |
 | `worker_status` | string | `"dead"`, `"idle"`, or `"processing"` |
-| `current_job_id` | string or null | Job ID currently being processed; null if idle |
+
+The response intentionally omits job IDs: this endpoint is unauthenticated.

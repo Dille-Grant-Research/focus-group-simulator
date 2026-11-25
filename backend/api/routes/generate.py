@@ -1,7 +1,7 @@
 """Session parameter auto-generation endpoint.
 
 Accepts a research topic and returns LLM-generated demographics, questions,
-session name, and purpose. Uses the same Ollama provider as the job worker.
+session name, and purpose. Uses the same inference provider as the job worker.
 Auth required — the endpoint consumes inference resources.
 """
 
@@ -14,11 +14,20 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from api.config import Settings, get_settings
-from focus_group.llm.ollama import OllamaConnectionError, OllamaProvider
-from focus_group.models.config import OllamaModelConfig
+from api.config import Settings, build_llm_provider, get_settings
+from focus_group.llm.base import BaseLLMProvider
+from focus_group.llm.ollama import OllamaConnectionError
+from focus_group.llm.openai_compat import OpenAIConnectionError
+from focus_group.models.config import (
+    MAX_DEMOGRAPHIC_CHARS,
+    MAX_PURPOSE_CHARS,
+    MAX_QUESTION_CHARS,
+    MAX_SESSION_NAME_CHARS,
+)
 
 logger = logging.getLogger(__name__)
+
+_LLM_CONNECTION_ERRORS = (OllamaConnectionError, OpenAIConnectionError)
 
 router = APIRouter(prefix="/generate", tags=["generate"])
 
@@ -44,14 +53,6 @@ class GenerateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_provider(settings: Settings) -> OllamaProvider:
-    config = OllamaModelConfig(
-        model_name=settings.OLLAMA_MODEL,
-        base_url=settings.ollama_base_url,
-    )
-    return OllamaProvider(config)
 
 
 def _strip_fences(raw: str) -> str:
@@ -133,14 +134,21 @@ async def generate_session_params(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> GenerateResponse:
-    provider = _build_provider(settings)
+    provider = build_llm_provider(settings)
+    try:
+        return await _generate_params(provider, body)
+    finally:
+        await provider.aclose()
 
+
+async def _generate_params(provider: BaseLLMProvider, body: GenerateRequest) -> GenerateResponse:
+    """Run the two generation calls and parse them into a GenerateResponse."""
     # ── Call 1: demographics + session meta ──────────────────────────────────
     demo_prompt = _demographics_prompt(body.research_topic, body.num_participants)
     try:
         demo_raw = await provider.generate(demo_prompt, system_prompt=_DEMOGRAPHICS_SYSTEM)
-    except OllamaConnectionError as exc:
-        logger.warning("Ollama unreachable during generate: %s", exc)
+    except _LLM_CONNECTION_ERRORS as exc:
+        logger.warning("Inference service unreachable during generate: %s", exc)
         raise HTTPException(
             status_code=503,
             detail={
@@ -173,8 +181,8 @@ async def generate_session_params(
     q_prompt = _questions_prompt(body.research_topic, body.num_questions)
     try:
         q_raw = await provider.generate(q_prompt, system_prompt=_QUESTIONS_SYSTEM)
-    except OllamaConnectionError as exc:
-        logger.warning("Ollama unreachable during generate (questions): %s", exc)
+    except _LLM_CONNECTION_ERRORS as exc:
+        logger.warning("Inference service unreachable during generate (questions): %s", exc)
         raise HTTPException(
             status_code=503,
             detail={
@@ -197,9 +205,10 @@ async def generate_session_params(
             },
         )
 
+    # Clip to the SessionConfig caps so the UI can always submit what we return.
     return GenerateResponse(
-        session_name=session_name,
-        purpose=purpose,
-        demographics=demographics,
-        questions=questions,
+        session_name=session_name[:MAX_SESSION_NAME_CHARS],
+        purpose=purpose[:MAX_PURPOSE_CHARS],
+        demographics=[d[:MAX_DEMOGRAPHIC_CHARS] for d in demographics],
+        questions=[q[:MAX_QUESTION_CHARS] for q in questions],
     )

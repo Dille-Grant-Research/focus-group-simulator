@@ -10,6 +10,9 @@ from focus_group.llm.factory import create_provider
 from focus_group.llm.openai_compat import (
     OpenAICompatibleProvider,
     OpenAIConnectionError,
+    OpenAIContextOverflowError,
+    OpenAIGenerationError,
+    strip_reasoning,
 )
 from focus_group.models.config import (
     CloudModelConfig,
@@ -52,6 +55,42 @@ def provider_no_key(cloud_config: CloudModelConfig) -> OpenAICompatibleProvider:
         # Ensure the env var is not set
         os.environ.pop("TEST_OPENAI_KEY", None)
         return OpenAICompatibleProvider(cloud_config)
+
+
+_TEST_TIMEOUT_SECONDS = 45.0
+
+
+@pytest.fixture
+def provider_unauthenticated() -> OpenAICompatibleProvider:
+    """Provider for a keyless endpoint (api_key_env_var=None)."""
+    return OpenAICompatibleProvider(
+        CloudModelConfig(
+            provider=LLMProviderType.OPENAI,
+            model_name="test-model",
+            base_url="http://cruncher.test:1234",
+            request_timeout_seconds=_TEST_TIMEOUT_SECONDS,
+        )
+    )
+
+
+def _mock_client(post: AsyncMock | None = None, get: AsyncMock | None = None) -> AsyncMock:
+    """Create a mock httpx.AsyncClient usable as an async context manager."""
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    if post is not None:
+        mock_client.post = post
+    if get is not None:
+        mock_client.get = get
+    return mock_client
+
+
+def _models_response(model_ids: list[str]) -> httpx.Response:
+    """Create a /v1/models list response."""
+    return _mock_response(
+        200,
+        json_data={"object": "list", "data": [{"id": i, "object": "model"} for i in model_ids]},
+    )
 
 
 def _mock_response(
@@ -307,51 +346,112 @@ class TestErrorHandling:
 
 
 class TestIsAvailable:
-    """Tests for the is_available method."""
+    """Tests for the is_available method (GET /v1/models)."""
 
     @pytest.mark.asyncio
-    async def test_available_with_valid_key(
+    async def test_available_when_model_listed(
         self, provider_with_key: OpenAICompatibleProvider
     ) -> None:
-        """Returns True when API responds successfully."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=_success_response())
+        """Returns True when the configured model is in the model list."""
+        mock_client = _mock_client(get=AsyncMock(return_value=_models_response(["test-model"])))
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
             assert await provider_with_key.is_available() is True
 
+        mock_client.get.assert_called_once()
+        assert mock_client.get.call_args[0][0] == "https://api.test.com/v1/models"
+
     @pytest.mark.asyncio
     async def test_unavailable_without_key(self, provider_no_key: OpenAICompatibleProvider) -> None:
-        """Returns False when no API key is set."""
+        """Returns False when a key env var is configured but not set."""
         assert await provider_no_key.is_available() is False
 
     @pytest.mark.asyncio
-    async def test_unavailable_on_auth_failure(
-        self, provider_with_key: OpenAICompatibleProvider
+    @pytest.mark.parametrize(
+        "get_mock",
+        [
+            pytest.param(AsyncMock(return_value=_models_response(["other-model"])), id="model-missing"),
+            pytest.param(AsyncMock(return_value=_mock_response(401, text="Unauthorized")), id="auth-401"),
+            pytest.param(AsyncMock(return_value=_mock_response(500, text="boom")), id="server-500"),
+            pytest.param(AsyncMock(return_value=_mock_response(200, text="not json")), id="bad-json"),
+            pytest.param(AsyncMock(side_effect=httpx.ConnectError("refused")), id="network-error"),
+        ],
+    )
+    async def test_unavailable(
+        self, provider_with_key: OpenAICompatibleProvider, get_mock: AsyncMock
     ) -> None:
-        """Returns False when API returns 401."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=_mock_response(401, text="Unauthorized"))
+        """Returns False when the model list can't confirm the configured model."""
+        mock_client = _mock_client(get=get_mock)
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
             assert await provider_with_key.is_available() is False
+
+
+# ============================================================================
+# Unauthenticated Endpoint Tests (e.g. self-hosted LM Studio)
+# ============================================================================
+
+
+class TestUnauthenticatedEndpoint:
+    """Provider configured with no API key env var at all."""
 
     @pytest.mark.asyncio
-    async def test_unavailable_on_network_error(
-        self, provider_with_key: OpenAICompatibleProvider
+    async def test_generate_sends_no_auth_header(
+        self, provider_unauthenticated: OpenAICompatibleProvider
     ) -> None:
-        """Returns False when network is unreachable."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        mock_client = _mock_client(post=AsyncMock(return_value=_success_response()))
 
         with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
-            assert await provider_with_key.is_available() is False
+            await provider_unauthenticated.generate("Hello")
+
+        assert "Authorization" not in mock_client.post.call_args[1]["headers"]
+
+    @pytest.mark.asyncio
+    async def test_available_without_key(
+        self, provider_unauthenticated: OpenAICompatibleProvider
+    ) -> None:
+        mock_client = _mock_client(get=AsyncMock(return_value=_models_response(["test-model"])))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider_unauthenticated.is_available() is True
+
+        assert "Authorization" not in mock_client.get.call_args[1]["headers"]
+
+    def test_uses_configured_timeout(self, provider_unauthenticated: OpenAICompatibleProvider) -> None:
+        assert provider_unauthenticated.config.request_timeout_seconds == _TEST_TIMEOUT_SECONDS
+
+
+# ============================================================================
+# Reasoning Stripping Tests
+# ============================================================================
+
+
+class TestStripReasoning:
+    """Qwen3-style <think> blocks must not leak into returned content."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("plain answer", "plain answer", id="no-think"),
+            pytest.param("<think>hmm</think>\n\nanswer", "answer", id="leading-think"),
+            pytest.param("<think>a\nb\nc</think>[1, 2]", "[1, 2]", id="multiline-think"),
+            pytest.param("<think>never closed", "", id="truncated-think"),
+            pytest.param("<think></think>answer", "answer", id="empty-think"),
+        ],
+    )
+    def test_strip_reasoning(self, raw: str, expected: str) -> None:
+        assert strip_reasoning(raw) == expected
+
+    @pytest.mark.asyncio
+    async def test_generate_strips_reasoning(
+        self, provider_with_key: OpenAICompatibleProvider
+    ) -> None:
+        mock_client = _mock_client(
+            post=AsyncMock(return_value=_success_response("<think>reasoning</think>\n{\"a\": 1}"))
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider_with_key.generate("Hello") == '{"a": 1}'
 
 
 # ============================================================================
@@ -457,3 +557,434 @@ class TestConfigParsing:
         assert config.temperature == 0.7
         assert config.top_p == 0.9
         assert config.num_ctx == 8192
+        assert config.request_timeout_seconds == 120.0
+
+    def test_cloud_config_api_key_optional(self) -> None:
+        """CloudModelConfig allows unauthenticated endpoints."""
+        config = CloudModelConfig(provider=LLMProviderType.OPENAI, model_name="test-model")
+        assert config.api_key_env_var is None
+
+
+# ============================================================================
+# Provider Hardening (LM Studio / cruncher behaviour)
+# ============================================================================
+
+_LMSTUDIO_CONTEXT_OVERFLOW_BODY = (
+    '{"error":"Context size has been exceeded."}'
+)
+_RETRIES = 2
+_TOTAL_ATTEMPTS = _RETRIES + 1
+
+
+def _completion(
+    content: str | None,
+    finish_reason: str = "stop",
+    usage: dict | None = None,
+) -> httpx.Response:
+    """A chat completion response with explicit content, finish_reason and usage."""
+    body: dict = {
+        "choices": [
+            {"message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}
+        ]
+    }
+    if usage is not None:
+        body["usage"] = usage
+    return _mock_response(200, json_data=body)
+
+
+def _hardening_provider(**overrides) -> OpenAICompatibleProvider:
+    """Unauthenticated provider with fast retries and optional config overrides."""
+    config = CloudModelConfig(
+        provider=LLMProviderType.OPENAI,
+        model_name="test-model",
+        base_url="http://cruncher.test:1234",
+        **overrides,
+    )
+    return OpenAICompatibleProvider(config, max_retries=_RETRIES, retry_delay=0.0)
+
+
+class TestOptionalSamplingParams:
+    """reasoning_effort and seed are sent only when configured."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("overrides", "expected_present", "expected_absent"),
+        [
+            pytest.param({}, {}, {"reasoning_effort", "seed"}, id="neither-set"),
+            pytest.param(
+                {"reasoning_effort": "none"}, {"reasoning_effort": "none"}, {"seed"}, id="effort"
+            ),
+            pytest.param({"seed": 42}, {"seed": 42}, {"reasoning_effort"}, id="seed"),
+            pytest.param(
+                {"reasoning_effort": "none", "seed": 0},
+                {"reasoning_effort": "none", "seed": 0},
+                set(),
+                id="both-including-zero-seed",
+            ),
+        ],
+    )
+    async def test_payload(
+        self, overrides: dict, expected_present: dict, expected_absent: set[str]
+    ) -> None:
+        provider = _hardening_provider(**overrides)
+        mock_client = _mock_client(post=AsyncMock(return_value=_success_response()))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("Hello")
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        for key, value in expected_present.items():
+            assert payload[key] == value
+        assert not expected_absent & payload.keys()
+
+
+class TestEmptyContent:
+    """Blank content (e.g. reasoning ate max_tokens) is an error, not a valid answer."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("content", "finish_reason"),
+        [
+            pytest.param("", "stop", id="empty"),
+            pytest.param(None, "stop", id="null"),
+            pytest.param("   \n", "stop", id="whitespace"),
+            pytest.param("<think>never closed", "length", id="truncated-reasoning"),
+            pytest.param("", "length", id="length-empty"),
+        ],
+    )
+    async def test_blank_content_raises_after_retries(
+        self, content: str | None, finish_reason: str
+    ) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(return_value=_completion(content, finish_reason))
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(OpenAIGenerationError, match="empty content"):
+                await provider.generate("Hello")
+
+        assert mock_client.post.call_count == _TOTAL_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_length_error_mentions_truncation(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("", "length")))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(OpenAIGenerationError, match="max_tokens"):
+                await provider.generate("Hello")
+
+    @pytest.mark.asyncio
+    async def test_blank_then_success_recovers(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(side_effect=[_completion(""), _completion("real answer")])
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider.generate("Hello") == "real answer"
+
+
+class TestContextOverflow:
+    """LM Studio's shared-context 400 is a distinct, retryable error."""
+
+    @pytest.mark.asyncio
+    async def test_overflow_raises_distinct_error_after_retries(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(return_value=_mock_response(400, text=_LMSTUDIO_CONTEXT_OVERFLOW_BODY))
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(OpenAIContextOverflowError):
+                await provider.generate("Hello")
+
+        assert mock_client.post.call_count == _TOTAL_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_overflow_then_success_recovers(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(
+                side_effect=[
+                    _mock_response(400, text=_LMSTUDIO_CONTEXT_OVERFLOW_BODY),
+                    _completion("fits now"),
+                ]
+            )
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            assert await provider.generate("Hello") == "fits now"
+
+    @pytest.mark.asyncio
+    async def test_other_400_is_not_overflow(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(return_value=_mock_response(400, text='{"error":"bad schema"}'))
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(OpenAIGenerationError) as exc_info:
+                await provider.generate("Hello")
+
+        assert not isinstance(exc_info.value, OpenAIContextOverflowError)
+
+
+class TestUsageTotals:
+    """Token usage reported by the server is accumulated per provider."""
+
+    @pytest.mark.asyncio
+    async def test_usage_accumulates(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(
+            post=AsyncMock(
+                side_effect=[
+                    _completion("a", usage={"prompt_tokens": 100, "completion_tokens": 7}),
+                    _completion("b", usage={"prompt_tokens": 300, "completion_tokens": 9}),
+                ]
+            )
+        )
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("one")
+            await provider.generate("two")
+
+        totals = provider.usage_totals
+        assert totals.calls == 2
+        assert totals.prompt_tokens == 400
+        assert totals.completion_tokens == 16
+        assert totals.max_prompt_tokens == 300
+
+    @pytest.mark.asyncio
+    async def test_missing_usage_still_counts_call(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("a")))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("one")
+
+        totals = provider.usage_totals
+        assert (totals.calls, totals.prompt_tokens, totals.completion_tokens) == (1, 0, 0)
+
+    def test_starts_empty(self) -> None:
+        totals = _hardening_provider().usage_totals
+        assert (totals.calls, totals.prompt_tokens, totals.completion_tokens) == (0, 0, 0)
+
+
+class TestSharedClient:
+    """One lazily created httpx client per provider, closed via aclose()."""
+
+    @pytest.mark.asyncio
+    async def test_client_reused_across_calls(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_success_response()))
+
+        with patch(
+            "focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client
+        ) as client_cls:
+            await provider.generate("one")
+            await provider.generate("two")
+
+        assert client_cls.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_and_next_call_reopens(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_success_response()))
+
+        with patch(
+            "focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client
+        ) as client_cls:
+            await provider.generate("one")
+            await provider.aclose()
+            mock_client.aclose.assert_awaited_once()
+            await provider.generate("two")
+
+        assert client_cls.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_aclose_without_client_is_noop(self) -> None:
+        await _hardening_provider().aclose()
+
+
+class TestConcurrencyLimit:
+    """In-flight requests are capped by max_parallel_requests."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, 2, 4])
+    async def test_peak_in_flight_never_exceeds_limit(self, limit: int) -> None:
+        import asyncio
+
+        provider = _hardening_provider(max_parallel_requests=limit)
+        in_flight = 0
+        peak = 0
+
+        async def slow_post(*_args, **_kwargs) -> httpx.Response:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return _success_response()
+
+        mock_client = _mock_client(post=AsyncMock(side_effect=slow_post))
+        requests = limit * 3
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await asyncio.gather(*(provider.generate(f"q{i}") for i in range(requests)))
+
+        assert peak == limit
+        assert mock_client.post.call_count == requests
+
+    def test_default_limit(self) -> None:
+        assert CloudModelConfig(
+            provider=LLMProviderType.OPENAI, model_name="m"
+        ).max_parallel_requests == 4
+
+
+class TestBuildFromSettings:
+    """api.config.build_llm_provider maps the LLM_* env vars onto the provider config."""
+
+    @pytest.mark.parametrize(
+        ("env", "expected_effort", "expected_parallel", "expected_ctx"),
+        [
+            pytest.param({}, None, 4, 8192, id="defaults"),
+            pytest.param(
+                {"LLM_REASONING_EFFORT": "none", "LLM_MAX_PARALLEL": "8", "LLM_NUM_CTX": "32768"},
+                "none",
+                8,
+                32768,
+                id="set",
+            ),
+        ],
+    )
+    def test_maps_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env: dict[str, str],
+        expected_effort: str | None,
+        expected_parallel: int,
+        expected_ctx: int,
+    ) -> None:
+        from api.config import Settings, build_llm_provider
+
+        # The real environment may set these; the test must see only its own values.
+        for name in ("LLM_REASONING_EFFORT", "LLM_MAX_PARALLEL", "LLM_NUM_CTX"):
+            monkeypatch.delenv(name, raising=False)
+
+        settings = Settings(
+            _env_file=None,
+            LLM_PROVIDER="openai",
+            LLM_BASE_URL="http://cruncher.test:1234/",
+            LLM_MODEL="test-model",
+            ENTRA_TENANT_ID="t",
+            ENTRA_CLIENT_ID="c",
+            ENTRA_CLIENT_SECRET="s",
+            ENTRA_REDIRECT_URI="http://localhost/cb",
+            FRONTEND_URL="http://localhost:3000",
+            SESSION_SECRET_KEY="k",
+            **env,
+        )
+        provider = build_llm_provider(settings)
+
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.config.reasoning_effort == expected_effort
+        assert provider.config.max_parallel_requests == expected_parallel
+        assert provider.max_context_tokens == expected_ctx
+
+
+class TestJsonSchema:
+    """json_schema maps to LM Studio's response_format (json_schema only, never json_object)."""
+
+    _SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+
+    @pytest.mark.asyncio
+    async def test_schema_sent_as_response_format(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion('{"a": "x"}')))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("Hello", json_schema=self._SCHEMA)
+
+        response_format = mock_client.post.call_args.kwargs["json"]["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["schema"] == self._SCHEMA
+
+    @pytest.mark.asyncio
+    async def test_no_schema_no_response_format(self) -> None:
+        provider = _hardening_provider()
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("plain")))
+
+        with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+            await provider.generate("Hello")
+
+        assert "response_format" not in mock_client.post.call_args.kwargs["json"]
+
+
+class TestBuildWithSampling:
+    """build_llm_provider applies resolved sampling params to either provider config."""
+
+    @pytest.mark.parametrize("provider_type", ["openai", "ollama"])
+    def test_sampling_applied(self, monkeypatch: pytest.MonkeyPatch, provider_type: str) -> None:
+        from api.config import SamplingParams, Settings, build_llm_provider
+
+        settings = Settings(
+            _env_file=None,
+            LLM_PROVIDER=provider_type,
+            LLM_BASE_URL="http://host.test:1234",
+            LLM_MODEL="test-model",
+            ENTRA_TENANT_ID="t",
+            ENTRA_CLIENT_ID="c",
+            ENTRA_CLIENT_SECRET="s",
+            ENTRA_REDIRECT_URI="http://localhost/cb",
+            FRONTEND_URL="http://localhost:3000",
+            SESSION_SECRET_KEY="k",
+        )
+        sampling = SamplingParams(temperature=0.3, top_p=0.8, max_tokens=512, seed=11)
+
+        provider = build_llm_provider(settings, sampling)
+
+        config = provider.config
+        assert (config.temperature, config.top_p, config.max_tokens, config.seed) == (
+            0.3,
+            0.8,
+            512,
+            11,
+        )
+
+
+class TestCallLogging:
+    """One INFO line per completion; a WARNING when the prompt nears the context size."""
+
+    _LOGGER = "focus_group.llm.openai_compat"
+    _NUM_CTX = 8192
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt_tokens", "expect_warning"),
+        [
+            pytest.param(1000, False, id="well-under"),
+            pytest.param(7300, False, id="just-under-90pct"),
+            pytest.param(7400, True, id="over-90pct"),
+        ],
+    )
+    async def test_logs_usage_and_warns_near_limit(
+        self, caplog: pytest.LogCaptureFixture, prompt_tokens: int, expect_warning: bool
+    ) -> None:
+        provider = _hardening_provider(num_ctx=self._NUM_CTX)
+        usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 42}
+        mock_client = _mock_client(post=AsyncMock(return_value=_completion("ok", usage=usage)))
+
+        with caplog.at_level("INFO", logger=self._LOGGER):
+            with patch("focus_group.llm.openai_compat.httpx.AsyncClient", return_value=mock_client):
+                await provider.generate("Hello")
+
+        info = [r for r in caplog.records if r.levelname == "INFO" and r.name == self._LOGGER]
+        assert len(info) == 1
+        assert f"prompt_tokens={prompt_tokens}" in info[0].getMessage()
+        assert "completion_tokens=42" in info[0].getMessage()
+        warned = any(
+            r.levelname == "WARNING" and "context" in r.getMessage() for r in caplog.records
+        )
+        assert warned is expect_warning

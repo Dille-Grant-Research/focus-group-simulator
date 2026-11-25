@@ -13,11 +13,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from api.config import Settings, get_settings
+from api.config import Settings, build_llm_provider, get_settings
 from api.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -46,15 +45,19 @@ async def health_check(request: Request) -> JSONResponse:
     else:
         components["worker"] = "alive"
 
-    # 3. Ollama
+    # 3. Inference service (Ollama or OpenAI-compatible, per LLM_PROVIDER)
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{settings.ollama_base_url}/api/tags")
-        components["ollama"] = "reachable" if r.status_code == 200 else "error"
+        available = await build_llm_provider(settings).is_available()
+        components["llm"] = "reachable" if available else "unreachable"
     except Exception:
-        components["ollama"] = "unreachable"
+        logger.exception("Health check: inference provider error")
+        components["llm"] = "error"
 
-    all_ok = components["database"] == "ok" and components["worker"] == "alive" and components["ollama"] == "reachable"
+    all_ok = (
+        components["database"] == "ok"
+        and components["worker"] == "alive"
+        and components["llm"] == "reachable"
+    )
     return JSONResponse(
         status_code=200 if all_ok else 503,
         content={
@@ -77,14 +80,14 @@ async def metrics(request: Request) -> JSONResponse:
         completed_24h_row = await (
             await db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'completed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 
         failed_24h_row = await (
             await db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'failed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 
@@ -92,7 +95,7 @@ async def metrics(request: Request) -> JSONResponse:
             await db.execute(
                 "SELECT AVG(CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS INTEGER))"
                 " FROM jobs WHERE status = 'completed'"
-                " AND completed_at > datetime('now', '-24 hours')"
+                " AND julianday(completed_at) > julianday('now', '-24 hours')"
             )
         ).fetchone()
 
@@ -115,6 +118,5 @@ async def metrics(request: Request) -> JSONResponse:
             "jobs_failed_24h": failed_24h_row[0] if failed_24h_row else 0,
             "avg_duration_seconds": avg_duration_row[0] if avg_duration_row else None,
             "worker_status": worker_status,
-            "current_job_id": current_job_id,
         }
     )

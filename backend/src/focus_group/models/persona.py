@@ -4,9 +4,19 @@ This module defines the Persona model that represents a focus group participant'
 identity, including their background, personality, and communication style.
 """
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class DiscussionStance(str, Enum):
+    """How a participant engages in group debate."""
+
+    AGREEABLE = "agreeable"
+    BALANCED = "balanced"
+    CHALLENGING = "challenging"
+    CONTRARIAN = "contrarian"
 
 
 class Persona(BaseModel):
@@ -91,10 +101,10 @@ class Persona(BaseModel):
     @classmethod
     def validate_stance(cls, v: str) -> str:
         """Normalize discussion_stance to a known value."""
-        valid = {"agreeable", "balanced", "challenging", "contrarian"}
+        valid = {stance.value for stance in DiscussionStance}
         if v.lower().strip() in valid:
             return v.lower().strip()
-        return "balanced"
+        return DiscussionStance.BALANCED.value
 
     @field_validator("communication_register")
     @classmethod

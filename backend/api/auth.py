@@ -2,12 +2,13 @@
 
 All MSAL interaction is isolated here — no FastAPI dependencies.
 Callers (routes, middleware) import build_auth_url, exchange_code_for_token,
-get_session_serializer, SESSION_COOKIE_MAX_AGE, and AuthError.
+get_session_serializer, and AuthError.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from msal import ConfidentialClientApplication
@@ -18,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 _SCOPES: list[str] = []  # MSAL adds openid/profile automatically; reserved scopes cannot be passed explicitly
 _FLOW_COOKIE_MAX_AGE = 600  # seconds — time window to complete the login redirect
-SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days — exported for use by routes and middleware
 
 # Module-level singleton. Safe because --workers 1 means single process.
 _msal_app: ConfidentialClientApplication | None = None
@@ -68,6 +68,33 @@ def get_flow_serializer(settings: Settings) -> URLSafeTimedSerializer:
 
 def get_session_serializer(settings: Settings) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.SESSION_SECRET_KEY, salt="session")
+
+
+@dataclass(frozen=True)
+class SessionInfo:
+    user_id: str
+    issued_at: int  # epoch seconds the cookie was signed
+
+
+def read_session(settings: Settings, cookie: str) -> SessionInfo:
+    """Verify a session cookie and return who it belongs to and when it was issued.
+
+    Raises:
+        AuthError (401 UNAUTHENTICATED) if the cookie is expired, forged or malformed.
+    """
+    try:
+        payload, signed_at = get_session_serializer(settings).loads(
+            cookie, max_age=settings.session_max_age_seconds, return_timestamp=True
+        )
+    except SignatureExpired:
+        raise AuthError(401, "UNAUTHENTICATED", "Session expired. Please log in again.")
+    except BadSignature:
+        raise AuthError(401, "UNAUTHENTICATED", "Invalid session cookie.")
+
+    user_id = payload.get("user_id") if isinstance(payload, dict) else None
+    if not user_id:
+        raise AuthError(401, "UNAUTHENTICATED", "Malformed session payload.")
+    return SessionInfo(user_id=user_id, issued_at=int(signed_at.timestamp()))
 
 
 # ---------------------------------------------------------------------------

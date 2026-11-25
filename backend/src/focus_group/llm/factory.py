@@ -8,16 +8,16 @@ OpenAI-compatible cloud providers (DeepSeek, OpenRouter, Together AI, etc.).
 from focus_group.llm.base import BaseLLMProvider
 from focus_group.llm.ollama import OllamaProvider
 from focus_group.llm.openai_compat import OpenAICompatibleProvider
-from focus_group.models.config import CloudModelConfig, ModelConfig, OllamaModelConfig
+from focus_group.models.config import CloudModelConfig, OllamaModelConfig
 
 
 def create_provider(
-    config: ModelConfig | OllamaModelConfig | CloudModelConfig,
+    config: OllamaModelConfig | CloudModelConfig,
 ) -> BaseLLMProvider:
     """Create an LLM provider based on configuration.
 
     Args:
-        config: A ModelConfig, OllamaModelConfig, or CloudModelConfig.
+        config: An OllamaModelConfig or CloudModelConfig.
 
     Returns:
         A configured LLM provider instance ready for use.
@@ -38,9 +38,6 @@ def create_provider(
     if isinstance(config, OllamaModelConfig):
         return OllamaProvider(config)
 
-    if isinstance(config, ModelConfig):
-        return OllamaProvider(config.primary)
-
     raise TypeError(
-        f"Expected ModelConfig, OllamaModelConfig, or CloudModelConfig, got {type(config).__name__}"
+        f"Expected OllamaModelConfig or CloudModelConfig, got {type(config).__name__}"
     )

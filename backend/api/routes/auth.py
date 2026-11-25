@@ -6,20 +6,21 @@ Routes mount under /api/v1/auth/* (prefix stacks with the /api/v1 mount in main.
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 
 from api.auth import (
-    SESSION_COOKIE_MAX_AGE,
     AuthError,
     build_auth_url,
     exchange_code_for_token,
     get_session_serializer,
+    read_session,
 )
 from api.config import Settings, get_settings
-from api.database import get_db, upsert_user
+from api.database import get_db, revoke_user_sessions, upsert_user
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ async def callback(
         httponly=True,
         secure=True,
         samesite="lax",
-        max_age=SESSION_COOKIE_MAX_AGE,
+        max_age=settings.session_max_age_seconds,
         path="/",
     )
     # Clean up the transient flow cookie
@@ -92,13 +93,35 @@ async def callback(
 
 
 # ---------------------------------------------------------------------------
-# GET /auth/logout
+# POST /auth/logout
 # ---------------------------------------------------------------------------
 
 
-@router.get("/logout")
-async def logout(settings: Settings = Depends(get_settings)) -> Response:
-    response = RedirectResponse(url=settings.FRONTEND_URL, status_code=302)
+@router.post("/logout")
+async def logout(request: Request, settings: Settings = Depends(get_settings)) -> Response:
+    """Revoke every session for the caller, clear the cookie, redirect to the frontend.
+
+    Always succeeds from the browser's point of view: a missing, expired or forged
+    cookie just means there is nothing to revoke, and a revocation failure is logged
+    rather than raised so the cookie is always cleared. 303 makes the browser follow the
+    redirect with GET.
+    """
+    cookie = request.cookies.get("session")
+    if cookie:
+        try:
+            session = read_session(settings, cookie)
+        except AuthError:
+            pass
+        else:
+            try:
+                async with get_db(settings.DB_PATH) as db:
+                    await revoke_user_sessions(db, session.user_id, int(time.time()))
+            except Exception:
+                # Still clear the cookie below; a DB hiccup must not leave the user signed in
+                # to a browser that believes it logged out.
+                logger.exception("Failed to revoke sessions for user %s on logout", session.user_id)
+
+    response = RedirectResponse(url=settings.FRONTEND_URL, status_code=303)
     response.delete_cookie(key="session", path="/")
     return response
 
